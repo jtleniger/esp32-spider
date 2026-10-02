@@ -21,8 +21,8 @@ pio device monitor -b 115200
 
 |Path|Role|
 |---|---|
-|`lib/ledfx/led_layout.h`|single source of truth: pins, fitted channel range, PWM range, all fade/pulse tuning|
-|`lib/ledfx/modes.h`|`Mode` enum (`kModePulse` = 0, `kModeSequentialFade` = 1), `kModeCount`, `parseModeArg`|
+|`lib/ledfx/led_layout.h`|single source of truth: pins, fitted channel range, PWM range, pulse tuning|
+|`lib/ledfx/modes.h`|`Mode` enum (`kModePulse` = 0, `kModeSingleChannel` = 1), `kModeCount`, `parseModeArg`, `parseChannelArg`|
 |`lib/ledfx/led_engine.{h,cpp}`|pure effect engine - no Arduino headers, fully host-testable|
 |`src/main.cpp`|ESP32-only glue: WiFi, `WebServer`, `Adafruit_TLC5947`, radar read|
 |`test/native/test_ledfx/`|host Unity suite `native/ledfx`|
@@ -37,10 +37,11 @@ pio device monitor -b 115200
 - `LedEngine::tick` returns true only when a channel value changed; `main.cpp`
   pushes a TLC5947 frame on true and otherwise does nothing. Do not push frames
   unconditionally: the driver bit-bangs 24x12 bits per write.
-- Both modes drive only the fitted channels (`kFirstChannel..kLastChannel`);
-  the rest of the frame stays 0. Which channel carries which colour is still
-  unmapped, so all fitted channels behave identically.
-- `loop()` has no `delay()`; the fade and HTTP serving must keep coexisting.
+- `kModePulse` drives only the fitted channels (`kFirstChannel..kLastChannel`);
+  the rest of the frame stays 0. `kModeSingleChannel` drives exactly the one
+  channel named by the request, fitted or empty. Which channel carries which
+  colour is still unmapped; `kModeSingleChannel` is how it gets mapped.
+- `loop()` has no `delay()`; the pulse and HTTP serving must keep coexisting.
 
 ### Modes (`POST /mode?m=<n>`)
 
@@ -48,22 +49,25 @@ pio device monitor -b 115200
   `2*kPulseHalfSlowMs` (2 s) while the radar pin is low and `2*kPulseHalfFastMs`
   (0.5 s) while it is high. The phase is carried across a speed switch, so the
   brightness does not jump.
-- **1 `kModeSequentialFade`** - one globally synchronised fade where channel `c`
-  goes dark after its `c`-th full cycle (channel 6 fades 6 times, channel 17
-  ends the run at ~17.4 s). Then the engine reports `finished()` and holds all
-  channels off. Ignores the radar.
+- **1 `kModeSingleChannel`** - lights exactly the channel named by `?c=<channel>`
+  at full PWM (`kMaxPwm`) and holds it; every other channel stays off. Ignores
+  the radar. Used to identify which physical LED a channel drives: issue
+  `c=6`, note the LED, then `c=7`, and so on.
 - Mode numbers are the enum values and are part of the HTTP contract; adding a
   mode means adding an enumerator before `kModeCount` and a branch in
   `LedEngine::tick`. Never renumber an existing mode.
-- Request validation is only `parseModeArg`: digits-only, value < `kModeCount`.
-  No separate range check in the handler.
+- Request validation is `parseModeArg` (digits-only, value < `kModeCount`) plus,
+  for `kModeSingleChannel`, `parseChannelArg` (digits-only, value <
+  `kChannelCount`). `LedEngine::setMode` re-checks both bounds.
 
 ### HTTP
 
 - `GET /health` -> 200 (empty body) when WiFi is connected, 503 otherwise.
-- `POST /mode?m=<n>` -> 200 `ok\n` on success, 400 `invalid mode\n` otherwise.
-  The query string is parsed for any method/content type, so request bodies are
-  ignored entirely; there is no JSON handling.
+- `POST /mode?m=<n>` -> 200 `ok\n` on success. `c=<channel>` selects the channel
+  for `m=1` and is required there; it is rejected with 400 `invalid channel\n`
+  when missing or out of range. A bad `m` is 400 `invalid mode\n`. The query
+  string is parsed for any method/content type, so request bodies are ignored
+  entirely; there is no JSON handling.
 
 ## Conventions & pitfalls
 
@@ -89,4 +93,4 @@ pio device monitor -b 115200
   flashing, and a radar module that idles high can interfere with the boot mode.
   The code uses `INPUT_PULLDOWN`; this is a hardware note, not a code fix.
 - Verification here is host tests + a firmware compile only. Flashing, the HTTP
-  endpoints and the visual fade must be checked on the real board.
+  endpoints and the visual pulse/channel selection must be checked on the board.

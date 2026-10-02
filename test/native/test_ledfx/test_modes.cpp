@@ -1,5 +1,6 @@
-// parseModeArg tests. No main() here: test_led_engine.cpp owns the only one in
-// the `native/ledfx` suite and runs these cases too.
+// parseModeArg / parseChannelArg tests. No main() here: test_led_engine.cpp owns
+// the only one in the `native/ledfx` suite and runs these cases too.
+#include <led_layout.h>
 #include <modes.h>
 #include <unity.h>
 
@@ -8,6 +9,11 @@
 static void assertRejected(const char *text) {
   uint16_t out = 0xFFFF;
   TEST_ASSERT_FALSE(ledfx::parseModeArg(text, out));
+}
+
+static void assertChannelRejected(const char *text) {
+  uint16_t out = 0xFFFF;
+  TEST_ASSERT_FALSE(ledfx::parseChannelArg(text, out));
 }
 
 void testParseAcceptZero() {
@@ -62,4 +68,53 @@ void testParseRejectWhitespace() {
   assertRejected("0 ");  // server.arg() is returned raw, no trimming
   assertRejected(" 0");
   assertRejected("1 ");
+}
+
+void testParseChannelAccept() {
+  uint16_t out = 0xFFFF;
+  TEST_ASSERT_TRUE(ledfx::parseChannelArg("0", out));
+  TEST_ASSERT_EQUAL_UINT16(0, out);
+  TEST_ASSERT_TRUE(ledfx::parseChannelArg("6", out));
+  TEST_ASSERT_EQUAL_UINT16(6, out);
+  TEST_ASSERT_TRUE(ledfx::parseChannelArg("23", out));  // kChannelCount - 1
+  TEST_ASSERT_EQUAL_UINT16(23, out);
+}
+
+void testParseChannelAcceptLeadingZeros() {
+  uint16_t out = 0xFFFF;
+  TEST_ASSERT_TRUE(ledfx::parseChannelArg("07", out));
+  TEST_ASSERT_EQUAL_UINT16(7, out);
+  TEST_ASSERT_TRUE(ledfx::parseChannelArg("000", out));
+  TEST_ASSERT_EQUAL_UINT16(0, out);
+}
+
+void testParseChannelRejectEmpty() {
+  uint16_t out = 0xFFFF;
+  TEST_ASSERT_FALSE(ledfx::parseChannelArg("", out));
+  TEST_ASSERT_FALSE(ledfx::parseChannelArg(nullptr, out));
+  TEST_ASSERT_EQUAL_UINT16(0xFFFF, out);
+}
+
+void testParseChannelRejectOutOfRange() {
+  assertChannelRejected("24");  // parses as a number, but kChannelCount is 24
+  assertChannelRejected("25");
+  assertChannelRejected("255");
+  assertChannelRejected("256");
+  assertChannelRejected("65536");
+  assertChannelRejected("99999999999999999999");
+}
+
+void testParseChannelRejectNonDigits() {
+  assertChannelRejected("abc");
+  assertChannelRejected("0x1");
+  assertChannelRejected("-1");
+  assertChannelRejected("+1");
+  assertChannelRejected("1e0");
+  assertChannelRejected("1.0");
+}
+
+void testParseChannelRejectWhitespace() {
+  assertChannelRejected("1 ");
+  assertChannelRejected(" 1");
+  assertChannelRejected("1\n");
 }

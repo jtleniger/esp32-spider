@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "led_layout.h"
+
 namespace ledfx {
 
 // Integer enumeration accepted by POST /mode?m=<value>.
@@ -9,8 +11,10 @@ enum Mode : uint16_t {
   // Every fitted channel breathes in lockstep. Runs until another mode is
   // selected; the radar input shortens the cycle while it sees motion.
   kModePulse = 0,
-  // Every fitted channel fades in and out channelNumber times, then the run ends.
-  kModeSequentialFade = 1,
+  // Lights exactly the channel named by ?c=<channel> at full brightness and
+  // holds it there; every other channel stays off. Ignores the radar. Used to
+  // work out which physical LED each channel drives.
+  kModeSingleChannel = 1,
 };
 
 constexpr uint16_t kModeCount = 2;
@@ -30,6 +34,28 @@ inline bool parseModeArg(const char *text, uint16_t &out) {
     }
     value = value * 10 + static_cast<uint32_t>(*p - '0');
     if (value >= kModeCount) {
+      return false;
+    }
+  }
+  out = static_cast<uint16_t>(value);
+  return true;
+}
+
+// Parses the ?c= value of POST /mode, the channel selected by kModeSingleChannel.
+// Same lexical rules as parseModeArg, but bounded by kChannelCount so any valid
+// channel index (including the empty footprints) is accepted. Bails out as soon
+// as the accumulator reaches kChannelCount, so no overflow is possible.
+inline bool parseChannelArg(const char *text, uint16_t &out) {
+  if (text == nullptr || *text == '\0') {
+    return false;
+  }
+  uint32_t value = 0;
+  for (const char *p = text; *p != '\0'; ++p) {
+    if (*p < '0' || *p > '9') {
+      return false;
+    }
+    value = value * 10 + static_cast<uint32_t>(*p - '0');
+    if (value >= kChannelCount) {
       return false;
     }
   }

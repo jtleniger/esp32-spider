@@ -45,15 +45,26 @@ void handleHealth() {
 }
 
 // The ESP32 WebServer parses the query string independently of method and
-// Content-Type, so the argument is available even for a body-less POST.
+// Content-Type, so the arguments are available even for a body-less POST.
 void handleMode() {
   uint16_t mode = 0;
-  if (!ledfx::parseModeArg(server.arg("m").c_str(), mode) ||
-      !engine.setMode(mode, millis())) {
+  if (!ledfx::parseModeArg(server.arg("m").c_str(), mode)) {
     server.send(400, "text/plain", "invalid mode\n");
     return;
   }
-  engine.tick(millis(), radarActive());  // blank the frame at the new start time
+
+  uint16_t channel = 0;
+  if (mode == ledfx::kModeSingleChannel &&
+      !ledfx::parseChannelArg(server.arg("c").c_str(), channel)) {
+    server.send(400, "text/plain", "invalid channel\n");
+    return;
+  }
+
+  if (!engine.setMode(mode, channel, millis())) {
+    server.send(400, "text/plain", "invalid mode\n");
+    return;
+  }
+  engine.tick(millis(), radarActive());  // blank/park the frame at the new start
   pushFrame();
   server.send(200, "text/plain", "ok\n");
 }
@@ -103,7 +114,7 @@ void setup() {
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
 
-  engine.setMode(ledfx::kModePulse, millis());  // breathe after boot, fast on motion
+  engine.setMode(ledfx::kModePulse, 0, millis());  // breathe after boot, fast on motion
 }
 
 void loop() {

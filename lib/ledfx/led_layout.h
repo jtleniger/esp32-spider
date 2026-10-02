@@ -2,7 +2,8 @@
 
 #include <cstdint>
 
-// All hardware and tuning knobs for the LED rig live here.
+// All hardware and pulse tuning for the LED rig live here. kModeSingleChannel
+// has no tuning: it drives the selected channel at full PWM.
 namespace ledfx {
 
 // --- TLC5947 breakout wiring (see PINS.md) ---
@@ -24,19 +25,13 @@ constexpr uint8_t kLastChannel = 17;  // 0-5 and 18-23 are empty for now
 constexpr uint8_t kConnectedChannelCount = kLastChannel - kFirstChannel + 1;
 
 // --- Planned colour inventory. Which channel carries which colour is not
-// mapped yet, so both modes treat every fitted channel identically. ---
+// mapped yet; kModeSingleChannel exists to map it. ---
 constexpr uint8_t kRedLedCount = 8;
 constexpr uint8_t kGreenLedCount = 8;
 constexpr uint8_t kOrangeLedCount = 8;
 
 // --- TLC5947 PWM resolution (12 bit) ---
 constexpr uint16_t kMaxPwm = 4095;
-
-// --- Mode 1 tuning: one PWM refresh every kFadeStepMs ---
-constexpr uint32_t kFadeStepMs = 8;
-constexpr uint16_t kFadeSteps = 64;                         // steps per fade-in
-constexpr uint32_t kHalfCycleMs = kFadeSteps * kFadeStepMs;  // 512 ms
-constexpr uint32_t kCycleMs = 2 * kHalfCycleMs;              // 1024 ms in+out
 
 // --- Mode 0 (pulse) tuning: a full in+out cycle is twice the half cycle ---
 constexpr uint32_t kPulseHalfSlowMs = 1000;  // 2 s cycle while the radar is idle

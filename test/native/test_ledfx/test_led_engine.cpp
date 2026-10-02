@@ -20,7 +20,20 @@ void assertRange(const ledfx::LedEngine &e, uint8_t first, uint8_t last,
   }
 }
 
-// Channels with an LED soldered on, i.e. the ones the modes drive.
+// Exactly `selected` sits at full PWM; every other channel is off. This is the
+// observable shape of kModeSingleChannel, including the empty footprints.
+void assertOnlyChannelLit(const ledfx::LedEngine &e, uint16_t selected) {
+  for (uint16_t channel = 0; channel < ledfx::kChannelCount; ++channel) {
+    TEST_ASSERT_EQUAL_UINT16(channel == selected ? ledfx::kMaxPwm : 0,
+                             e.frame()[channel]);
+  }
+}
+
+void assertAllOff(const ledfx::LedEngine &e) {
+  assertRange(e, 0, ledfx::kChannelCount - 1, 0);
+}
+
+// Channels with an LED soldered on, i.e. the ones kModePulse drives.
 void assertFitted(const ledfx::LedEngine &e, uint16_t value) {
   assertRange(e, ledfx::kFirstChannel, ledfx::kLastChannel, value);
 }
@@ -31,17 +44,8 @@ void assertUnfitted(const ledfx::LedEngine &e, uint16_t value) {
   assertRange(e, ledfx::kLastChannel + 1, ledfx::kChannelCount - 1, value);
 }
 
-void assertAllOff(const ledfx::LedEngine &e) {
-  assertRange(e, 0, ledfx::kChannelCount - 1, 0);
-}
-
-void assertSequentialModeUnchanged() {
-  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSequentialFade, engine.mode());
-  TEST_ASSERT_FALSE(engine.finished());
-}
-
 constexpr uint16_t kOneStepLevel =
-    static_cast<uint16_t>(ledfx::kMaxPwm / ledfx::kFadeSteps);
+    static_cast<uint16_t>(ledfx::kMaxPwm / ledfx::kPulseLevels);
 
 // Level renderPulse() emits `up` ms into a half cycle of `halfMs`.
 uint16_t pulseLevel(uint32_t up, uint32_t halfMs) {
@@ -59,7 +63,7 @@ uint16_t fittedLevel(const ledfx::LedEngine &e) {
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
 
-// --- parseModeArg cases, implemented in test_modes.cpp ---
+// --- parseModeArg / parseChannelArg cases, implemented in test_modes.cpp ---
 void testParseAcceptZero(void);
 void testParseAcceptOne(void);
 void testParseAcceptLeadingZeros(void);
@@ -68,55 +72,68 @@ void testParseRejectOutOfRange(void);
 void testParseRejectLargeValues(void);
 void testParseRejectNonDigits(void);
 void testParseRejectWhitespace(void);
+void testParseChannelAccept(void);
+void testParseChannelAcceptLeadingZeros(void);
+void testParseChannelRejectEmpty(void);
+void testParseChannelRejectOutOfRange(void);
+void testParseChannelRejectNonDigits(void);
+void testParseChannelRejectWhitespace(void);
 
 // --- shared cases ---
 
 // /mode's ?m= values are the enum values, so their numbering is a contract.
 static void testModeNumbering() {
   TEST_ASSERT_EQUAL_UINT16(0, ledfx::kModePulse);
-  TEST_ASSERT_EQUAL_UINT16(1, ledfx::kModeSequentialFade);
+  TEST_ASSERT_EQUAL_UINT16(1, ledfx::kModeSingleChannel);
   TEST_ASSERT_EQUAL_UINT16(2, ledfx::kModeCount);
 }
 
 static void testFreshEngineIsBlank() {
   ledfx::LedEngine fresh;
   TEST_ASSERT_EQUAL_UINT16(ledfx::kModePulse, fresh.mode());
-  TEST_ASSERT_TRUE(fresh.finished());
   assertAllOff(fresh);
+  // No mode has been started, so even a late tick must not emit anything.
   TEST_ASSERT_FALSE(fresh.tick(0, false));
+  TEST_ASSERT_FALSE(fresh.tick(12345, false));
+  assertAllOff(fresh);
 }
 
 static void testSetModeRejectsUnknownMode() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_FALSE(engine.setMode(ledfx::kModeCount, 0));
-  assertSequentialModeUnchanged();
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 7, 0));
+  TEST_ASSERT_FALSE(engine.setMode(ledfx::kModeCount, 0, 0));
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSingleChannel, engine.mode());
+  // The rejected call must not have disturbed the running selection.
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  assertOnlyChannelLit(engine, 7);
 }
 
 static void testSetModeRejectsLargestValue() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_FALSE(engine.setMode(65535, 0));
-  assertSequentialModeUnchanged();
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 7, 0));
+  TEST_ASSERT_FALSE(engine.setMode(65535, 0, 0));
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSingleChannel, engine.mode());
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  assertOnlyChannelLit(engine, 7);
 }
 
 // --- kModePulse cases ---
 
 static void testPulseStartsQuietAndRunsForever() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   TEST_ASSERT_EQUAL_UINT16(ledfx::kModePulse, engine.mode());
-  TEST_ASSERT_FALSE(engine.finished());
   TEST_ASSERT_FALSE(engine.tick(0, false));
   assertFitted(engine, 0);
 
-  // Far past any finite run: pulse keeps breathing instead of finishing.
-  for (uint32_t t = 0; t <= 5 * ledfx::kPulseHalfSlowMs;
-       t += ledfx::kPulseHalfSlowMs / 2) {
-    engine.tick(t, false);
-  }
-  TEST_ASSERT_FALSE(engine.finished());
+  // Far past any finite run the mode is still cycling: an odd multiple of the
+  // half cycle is a peak, the following even one a trough.
+  const uint32_t peakTime = 999 * ledfx::kPulseHalfSlowMs;
+  TEST_ASSERT_TRUE(engine.tick(peakTime, false));
+  assertFitted(engine, ledfx::kMaxPwm);
+  TEST_ASSERT_TRUE(engine.tick(peakTime + ledfx::kPulseHalfSlowMs, false));
+  assertFitted(engine, 0);
 }
 
 static void testPulseSlowPeakAndTrough() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   TEST_ASSERT_TRUE(engine.tick(ledfx::kPulseHalfSlowMs, false));
   assertFitted(engine, ledfx::kMaxPwm);
 
@@ -125,7 +142,7 @@ static void testPulseSlowPeakAndTrough() {
 }
 
 static void testPulseFastPeakAndTroughWhenRadarHigh() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   TEST_ASSERT_TRUE(engine.tick(ledfx::kPulseHalfFastMs, true));
   assertFitted(engine, ledfx::kMaxPwm);
 
@@ -136,11 +153,11 @@ static void testPulseFastPeakAndTroughWhenRadarHigh() {
 static void testPulseRadarShortensCycle() {
   // The same 125 ms is a full eighth of the idle half cycle but half of the
   // moving one, so motion must be brighter (and thus further into the fade).
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   engine.tick(ledfx::kPulseHalfFastMs / 2, false);
   const uint16_t idle = fittedLevel(engine);
 
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   engine.tick(ledfx::kPulseHalfFastMs / 2, true);
   const uint16_t moving = fittedLevel(engine);
 
@@ -153,7 +170,7 @@ static void testPulseRadarShortensCycle() {
 
 static void testPulseLevelQuantisesToPulseLevels() {
   const uint32_t stepMs = ledfx::kPulseHalfSlowMs / ledfx::kPulseLevels;
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   TEST_ASSERT_FALSE(engine.tick(stepMs, false));  // still rung 0
   TEST_ASSERT_TRUE(engine.tick(stepMs + 1, false));
   assertFitted(engine, kOneStepLevel);
@@ -163,7 +180,7 @@ static void testPulseLevelQuantisesToPulseLevels() {
 }
 
 static void testPulseSlowSweepIsMonotonicAndBounded() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   uint16_t previous = 0;
   for (uint32_t t = 0; t <= ledfx::kPulseHalfSlowMs; t += 4) {
     engine.tick(t, false);
@@ -185,7 +202,7 @@ static void testPulseSlowSweepIsMonotonicAndBounded() {
 }
 
 static void testPulseKeepsPhaseAcrossRadarSwitch() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   TEST_ASSERT_TRUE(engine.tick(ledfx::kPulseHalfSlowMs, false));
   assertFitted(engine, ledfx::kMaxPwm);  // mid-cycle peak, not a reset
 
@@ -197,7 +214,7 @@ static void testPulseKeepsPhaseAcrossRadarSwitch() {
 }
 
 static void testPulseUnfittedChannelsStayOff() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   for (uint32_t t = 0; t <= 2 * ledfx::kPulseHalfSlowMs;
        t += ledfx::kPulseHalfSlowMs / ledfx::kPulseLevels) {
     engine.tick(t, false);
@@ -206,151 +223,81 @@ static void testPulseUnfittedChannelsStayOff() {
 }
 
 static void testPulseRestartResetsFrame() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
   TEST_ASSERT_TRUE(engine.tick(ledfx::kPulseHalfSlowMs, false));
   assertFitted(engine, ledfx::kMaxPwm);
 
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, ledfx::kPulseHalfSlowMs));
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, ledfx::kPulseHalfSlowMs));
   assertAllOff(engine);
   TEST_ASSERT_FALSE(engine.tick(ledfx::kPulseHalfSlowMs, false));
 }
 
-// --- kModeSequentialFade cases ---
+// --- kModeSingleChannel cases ---
 
-static void testSetModeStartsFade() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSequentialFade, engine.mode());
-  TEST_ASSERT_FALSE(engine.finished());
+static void testSingleChannelStartsAtSelectedChannel() {
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 10, 0));
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSingleChannel, engine.mode());
+  assertAllOff(engine);  // cleared until the first tick
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  assertOnlyChannelLit(engine, 10);
 }
 
-static void testStepQuantisesToFadeStep() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
+static void testSingleChannelHoldsWithoutFurtherWrites() {
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 12, 0));
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  TEST_ASSERT_FALSE(engine.tick(1, false));
+  TEST_ASSERT_FALSE(engine.tick(100000, false));
+  assertOnlyChannelLit(engine, 12);
+}
+
+// The point of the mode: any channel index, fitted or empty, can be singled
+// out. Covers both ends of the frame and the empty footprints.
+static void testSingleChannelSelectsEveryValidChannel() {
+  for (uint16_t channel = 0; channel < ledfx::kChannelCount; ++channel) {
+    TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, channel, 0));
+    TEST_ASSERT_TRUE(engine.tick(0, false));
+    assertOnlyChannelLit(engine, channel);
+  }
+}
+
+static void testSingleChannelRejectsOutOfRangeChannel() {
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 5, 0));
+  TEST_ASSERT_FALSE(engine.setMode(ledfx::kModeSingleChannel, ledfx::kChannelCount, 0));
+  TEST_ASSERT_FALSE(engine.setMode(ledfx::kModeSingleChannel, 65535, 0));
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSingleChannel, engine.mode());
+  // The rejected calls must not have disturbed the running selection.
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  assertOnlyChannelLit(engine, 5);
+}
+
+static void testSingleChannelSwitchMovesTheLight() {
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 7, 0));
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  assertOnlyChannelLit(engine, 7);
+
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 9, 0));
+  assertAllOff(engine);
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  assertOnlyChannelLit(engine, 9);
+}
+
+static void testSingleChannelIgnoresRadar() {
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 6, 0));
+  TEST_ASSERT_TRUE(engine.tick(0, true));
+  assertOnlyChannelLit(engine, 6);
+  TEST_ASSERT_FALSE(engine.tick(1000, true));
+  assertOnlyChannelLit(engine, 6);
+}
+
+static void testSingleChannelToPulseRestart() {
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 8, 0));
+  TEST_ASSERT_TRUE(engine.tick(0, false));
+  assertOnlyChannelLit(engine, 8);
+
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModePulse, 0, 0));
+  assertAllOff(engine);
   TEST_ASSERT_FALSE(engine.tick(0, false));
-  TEST_ASSERT_FALSE(engine.tick(ledfx::kFadeStepMs / 2, false));
   assertFitted(engine, 0);
-}
-
-static void testFirstStepLevel() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kFadeStepMs, false));
-  assertFitted(engine, kOneStepLevel);
-}
-
-static void testHalfCyclePeak() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kHalfCycleMs, false));
-  assertFitted(engine, ledfx::kMaxPwm);
-}
-
-static void testLastStepOfFall() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kCycleMs - ledfx::kFadeStepMs, false));
-  assertFitted(engine, kOneStepLevel);
-}
-
-static void testRiseIsMonotonic() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  uint16_t previous[ledfx::kChannelCount];
-  for (uint16_t c = 0; c < ledfx::kChannelCount; ++c) {
-    previous[c] = engine.frame()[c];
-  }
-  for (uint32_t t = 0; t <= ledfx::kHalfCycleMs; t += ledfx::kFadeStepMs) {
-    engine.tick(t, false);
-    for (uint8_t c = ledfx::kFirstChannel; c <= ledfx::kLastChannel; ++c) {
-      TEST_ASSERT_TRUE(engine.frame()[c] >= previous[c]);
-      previous[c] = engine.frame()[c];
-    }
-  }
-  // The sweep must actually reach the peak, otherwise monotonicity is vacuous.
-  assertFitted(engine, ledfx::kMaxPwm);
-}
-
-static void testFallIsMonotonic() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  engine.tick(ledfx::kHalfCycleMs, false);
-  assertFitted(engine, ledfx::kMaxPwm);
-
-  uint16_t previous[ledfx::kChannelCount];
-  for (uint16_t c = 0; c < ledfx::kChannelCount; ++c) {
-    previous[c] = engine.frame()[c];
-  }
-  for (uint32_t t = ledfx::kHalfCycleMs; t <= ledfx::kCycleMs; t += ledfx::kFadeStepMs) {
-    engine.tick(t, false);
-    for (uint8_t c = ledfx::kFirstChannel; c <= ledfx::kLastChannel; ++c) {
-      TEST_ASSERT_TRUE(engine.frame()[c] <= previous[c]);
-      previous[c] = engine.frame()[c];
-    }
-  }
-  assertFitted(engine, 0);
-}
-
-static void testUnfittedChannelsStayOff() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  for (uint32_t t = 0; t <= ledfx::kLastChannel * ledfx::kCycleMs;
-       t += ledfx::kFadeStepMs) {
-    engine.tick(t, false);
-    assertUnfitted(engine, 0);
-  }
-}
-
-static void testChannelPeaksOnItsOwnCycleCount() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  // Channel 6 is on its 6th fade (cycles 0..5), so it is at the peak here.
-  TEST_ASSERT_TRUE(engine.tick(5 * ledfx::kCycleMs + ledfx::kHalfCycleMs, false));
-  TEST_ASSERT_EQUAL_UINT16(ledfx::kMaxPwm, engine.frame()[6]);
-}
-
-static void testChannelGoesDarkAfterItsOwnCycleCount() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  // Cycle 6 belongs to channel 7 onwards; two more fades than channel 6 allows.
-  TEST_ASSERT_TRUE(engine.tick(6 * ledfx::kCycleMs + ledfx::kHalfCycleMs, false));
-  TEST_ASSERT_EQUAL_UINT16(0, engine.frame()[6]);
-  assertRange(engine, 7, ledfx::kLastChannel, ledfx::kMaxPwm);
-}
-
-static void testRunEndsAfterLastChannelCycles() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  // The final frame is only a change - and so worth pushing - if the previous
-  // frame was still lit, which is how the firmware ticks the engine.
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kLastChannel * ledfx::kCycleMs -
-                               ledfx::kFadeStepMs, false));
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kLastChannel * ledfx::kCycleMs, false));
-  assertAllOff(engine);
-  TEST_ASSERT_TRUE(engine.finished());
-}
-
-static void testTickAfterFinishedStaysQuiet() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  engine.tick(ledfx::kLastChannel * ledfx::kCycleMs - ledfx::kFadeStepMs, false);
-  engine.tick(ledfx::kLastChannel * ledfx::kCycleMs, false);
-  TEST_ASSERT_TRUE(engine.finished());
-  TEST_ASSERT_FALSE(
-      engine.tick(ledfx::kLastChannel * ledfx::kCycleMs + ledfx::kCycleMs, false));
-  assertAllOff(engine);
-  TEST_ASSERT_TRUE(engine.finished());
-}
-
-static void testMillisecondWraparound() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0xFFFFFF00u));
-  // 0x100 - 0xFFFFFF00 wraps to kHalfCycleMs.
-  TEST_ASSERT_TRUE(engine.tick(0x00000100u, false));
-  assertFitted(engine, ledfx::kMaxPwm);
-}
-
-static void testSequentialFadeIgnoresRadar() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kHalfCycleMs, true));
-  assertFitted(engine, ledfx::kMaxPwm);
-}
-
-static void testRestartResetsFrame() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, 0));
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kHalfCycleMs, false));
-  assertFitted(engine, ledfx::kMaxPwm);
-
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSequentialFade, ledfx::kHalfCycleMs));
-  assertAllOff(engine);
-  TEST_ASSERT_FALSE(engine.tick(ledfx::kHalfCycleMs, false));
 }
 
 int main(void) {
@@ -368,21 +315,13 @@ int main(void) {
   RUN_TEST(testPulseKeepsPhaseAcrossRadarSwitch);
   RUN_TEST(testPulseUnfittedChannelsStayOff);
   RUN_TEST(testPulseRestartResetsFrame);
-  RUN_TEST(testSetModeStartsFade);
-  RUN_TEST(testStepQuantisesToFadeStep);
-  RUN_TEST(testFirstStepLevel);
-  RUN_TEST(testHalfCyclePeak);
-  RUN_TEST(testLastStepOfFall);
-  RUN_TEST(testRiseIsMonotonic);
-  RUN_TEST(testFallIsMonotonic);
-  RUN_TEST(testUnfittedChannelsStayOff);
-  RUN_TEST(testChannelPeaksOnItsOwnCycleCount);
-  RUN_TEST(testChannelGoesDarkAfterItsOwnCycleCount);
-  RUN_TEST(testRunEndsAfterLastChannelCycles);
-  RUN_TEST(testTickAfterFinishedStaysQuiet);
-  RUN_TEST(testMillisecondWraparound);
-  RUN_TEST(testSequentialFadeIgnoresRadar);
-  RUN_TEST(testRestartResetsFrame);
+  RUN_TEST(testSingleChannelStartsAtSelectedChannel);
+  RUN_TEST(testSingleChannelHoldsWithoutFurtherWrites);
+  RUN_TEST(testSingleChannelSelectsEveryValidChannel);
+  RUN_TEST(testSingleChannelRejectsOutOfRangeChannel);
+  RUN_TEST(testSingleChannelSwitchMovesTheLight);
+  RUN_TEST(testSingleChannelIgnoresRadar);
+  RUN_TEST(testSingleChannelToPulseRestart);
   RUN_TEST(testParseAcceptZero);
   RUN_TEST(testParseAcceptOne);
   RUN_TEST(testParseAcceptLeadingZeros);
@@ -391,5 +330,11 @@ int main(void) {
   RUN_TEST(testParseRejectLargeValues);
   RUN_TEST(testParseRejectNonDigits);
   RUN_TEST(testParseRejectWhitespace);
+  RUN_TEST(testParseChannelAccept);
+  RUN_TEST(testParseChannelAcceptLeadingZeros);
+  RUN_TEST(testParseChannelRejectEmpty);
+  RUN_TEST(testParseChannelRejectOutOfRange);
+  RUN_TEST(testParseChannelRejectNonDigits);
+  RUN_TEST(testParseChannelRejectWhitespace);
   return UNITY_END();
 }
