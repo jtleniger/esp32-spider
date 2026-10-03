@@ -8,16 +8,19 @@ namespace ledfx {
 
 // Integer enumeration accepted by POST /mode?m=<value>.
 enum Mode : uint16_t {
-  // Every fitted channel breathes in lockstep. Runs until another mode is
-  // selected; the radar input shortens the cycle while it sees motion.
-  kModePulse = 0,
+  // Smolder: every eye runs a slow orange/red crossfade with an ember flicker
+  // and its own phase offset. Motion makes the greens flash across the eyes.
+  kModeSmolder = 0,
   // Lights exactly the channel named by ?c=<channel> at full brightness and
   // holds it there; every other channel stays off. Ignores the radar. Used to
-  // work out which physical LED each channel drives.
+  // identify a physical LED during wiring checks.
   kModeSingleChannel = 1,
+  // Every channel breathes in lockstep. Runs until another mode is selected;
+  // the radar input shortens the cycle while it sees motion.
+  kModePulse = 2,
 };
 
-constexpr uint16_t kModeCount = 2;
+constexpr uint16_t kModeCount = 3;
 
 // Parses the ?m= value of POST /mode. Accepts a non-empty run of decimal ASCII
 // digits only; "+1", "-1", "0x0", "1 ", "" and anything at or above kModeCount
@@ -43,8 +46,8 @@ inline bool parseModeArg(const char *text, uint16_t &out) {
 
 // Parses the ?c= value of POST /mode, the channel selected by kModeSingleChannel.
 // Same lexical rules as parseModeArg, but bounded by kChannelCount so any valid
-// channel index (including the empty footprints) is accepted. Bails out as soon
-// as the accumulator reaches kChannelCount, so no overflow is possible.
+// channel index is accepted. Bails out as soon as the accumulator reaches
+// kChannelCount, so no overflow is possible.
 inline bool parseChannelArg(const char *text, uint16_t &out) {
   if (text == nullptr || *text == '\0') {
     return false;
