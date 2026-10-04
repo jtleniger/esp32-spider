@@ -398,6 +398,49 @@ static void testSmolderIdleLeavesGreenOff() {
   }
 }
 
+// kModeSmolder must hold pure single-colour stretches: through eye 0's red hold
+// the orange LED is fully dark and red is bright and flickering; through the
+// orange hold it is the mirror image. Flicker is proportional to level, so the
+// dark colour shows no flicker at all and the lit one swings by a large, visible
+// fraction of the flicker amplitude.
+static void testSmolderHoldsAreSingleColourAndFlicker() {
+  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSmolder, 0, 0));
+  const uint8_t orange = ledfx::kEyes[0].orange;
+  const uint8_t red = ledfx::kEyes[0].red;
+
+  // Eye 0's phase offset is zero, so t < kSmolderDwellMs parks it on the red
+  // hold: red at full power, orange completely off.
+  uint16_t redMin = ledfx::kMaxPwm;
+  uint16_t redMax = 0;
+  for (uint32_t t = 0; t < ledfx::kSmolderDwellMs;
+       t += ledfx::kSmolderFlickerStepMs) {
+    engine.tick(t, false);
+    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, orange));
+    const uint16_t r = channelLevel(engine, red);
+    if (r < redMin) redMin = r;
+    if (r > redMax) redMax = r;
+  }
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kMaxPwm, redMax);  // the hold reaches full
+  TEST_ASSERT_TRUE(redMin >= ledfx::kMaxPwm - ledfx::kSmolderFlickerPwm);
+  TEST_ASSERT_TRUE(redMax - redMin >= ledfx::kSmolderFlickerPwm / 2);
+
+  // The orange hold is the mirror image: red is off, orange is bright.
+  const uint32_t orangeHold = ledfx::kSmolderDwellMs + ledfx::kSmolderFadeMs;
+  uint16_t orangeMin = ledfx::kMaxPwm;
+  uint16_t orangeMax = 0;
+  for (uint32_t t = orangeHold; t < orangeHold + ledfx::kSmolderDwellMs;
+       t += ledfx::kSmolderFlickerStepMs) {
+    engine.tick(t, false);
+    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, red));
+    const uint16_t o = channelLevel(engine, orange);
+    if (o < orangeMin) orangeMin = o;
+    if (o > orangeMax) orangeMax = o;
+  }
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kMaxPwm, orangeMax);
+  TEST_ASSERT_TRUE(orangeMin >= ledfx::kMaxPwm - ledfx::kSmolderFlickerPwm);
+  TEST_ASSERT_TRUE(orangeMax - orangeMin >= ledfx::kSmolderFlickerPwm / 2);
+}
+
 // The whole point of the per-eye phase offsets: at any instant the eyes sit at
 // different points of the crossfade.
 static void testSmolderEyesAreNotInLockstep() {
@@ -871,6 +914,7 @@ int main(void) {
   RUN_TEST(testSingleChannelIgnoresRadar);
   RUN_TEST(testSingleChannelToPulseRestart);
   RUN_TEST(testSmolderIdleLeavesGreenOff);
+  RUN_TEST(testSmolderHoldsAreSingleColourAndFlicker);
   RUN_TEST(testSmolderEyesAreNotInLockstep);
   RUN_TEST(testSmolderGreenSpreadsEyeByEye);
   RUN_TEST(testSmolderGreenFadesAndEmbersResume);

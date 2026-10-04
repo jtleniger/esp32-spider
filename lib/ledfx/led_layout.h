@@ -69,18 +69,20 @@ constexpr uint32_t kPulseHalfFastMs = 250;   // 0.5 s cycle while it sees motion
 constexpr uint16_t kPulseLevels = 64;        // brightness rungs per half cycle
 
 // --- kModeSmolder (mode 0) tuning ---
-// Orange and red crossfade on a slow "breathing" curve that dwells on each
-// colour before easing across to the other; both keep a floor glow so the embers
-// never go fully dark. Every eye runs the same curve with its own phase offset
-// (kSmolderEyePhasePermille), so they never pulse in lockstep, and a per-channel
-// pseudo-random flicker is layered on top.
+// Orange and red crossfade on a slow "breathing" curve: each colour holds at
+// full brightness while the other sits fully dark, then eases across, so each
+// cycle has a clear red-only stretch and a clear orange-only stretch. Every eye
+// runs the same curve with its own phase offset (kSmolderEyePhasePermille), so
+// they never pulse in lockstep, and a per-channel pseudo-random flicker is
+// layered on top.
 // A full cycle is: hold red, crossfade to orange, hold orange, crossfade back.
 constexpr uint32_t kSmolderDwellMs = 7000;      // hold on one colour, bright
 constexpr uint32_t kSmolderFadeMs = 7000;       // eased crossfade to the other
 constexpr uint32_t kSmolderPeriodMs = 2 * (kSmolderDwellMs + kSmolderFadeMs);
 constexpr uint16_t kSmolderLevels = 64;         // rungs the crossfade quantises to
-constexpr uint16_t kSmolderFloorPwm = 256;      // dimmest ember glow
-constexpr uint16_t kSmolderFlickerPwm = 420;    // +/- ember noise amplitude
+// +/- ember noise at full brightness, scaled down with the channel level, so the
+// lit colour flickers hard while the dark one stays exactly off.
+constexpr uint16_t kSmolderFlickerPwm = 1400;
 constexpr uint32_t kSmolderFlickerStepMs = 47;  // flicker refresh interval
 
 // Per-eye phase advance in permille of kSmolderPeriodMs, spread around the
@@ -94,7 +96,7 @@ constexpr uint32_t kGreenSpreadMs = 120;    // stagger between consecutive eyes
 constexpr uint32_t kGreenAttackMs = 40;     // snap-on ramp, effectively instant
 constexpr uint32_t kGreenHoldMs = 3000;     // full-brightness hold
 constexpr uint32_t kGreenFadeMs = 800;      // fade back into the embers
-constexpr uint16_t kGreenFlickerPwm = 900;  // ember noise amplitude while lit
+constexpr uint16_t kGreenFlickerPwm = 1200;  // ember noise at full brightness
 
 // --- kModeStalker (mode 3) tuning ---
 // One dim eye at a time scans around the rig; each scanning eye lights a single
@@ -105,12 +107,12 @@ constexpr uint16_t kGreenFlickerPwm = 900;  // ember noise amplitude while lit
 constexpr uint32_t kStalkerStepMs = 900;         // dwell per eye while scanning
 constexpr uint16_t kStalkerDimPwm = 700;         // peak of the dim scanning glow
 constexpr uint16_t kStalkerGreenPermille = 620;  // green read-brightness trim
-constexpr uint16_t kStalkerFlickerPwm = 90;      // subtle shimmer on the scan
+constexpr uint16_t kStalkerFlickerPwm = 600;     // shimmer on the scan (at full)
 constexpr uint32_t kStalkerFlickerStepMs = 53;   // shimmer refresh interval
 constexpr uint32_t kStalkerPopMs = 220;          // ramp up to the pop on motion
 constexpr uint32_t kStalkerReleaseMs = 900;      // decay back to scanning
 constexpr uint16_t kStalkerPopPwm = kMaxPwm;     // settled colour level (red)
-constexpr uint16_t kStalkerPopFlickerPwm = 420;  // stutter on the wake-up
+constexpr uint16_t kStalkerPopFlickerPwm = 1000; // stutter on the wake-up (at full)
 
 // --- kModeBlink (mode 4) tuning ---
 // Each blink lights a random group of eyes for kBlinkOnMs and gives every
@@ -154,12 +156,12 @@ constexpr uint32_t kHeartbeatLevels = 64;          // quantise the envelope
 // level) ramps toward frantic: the spark travels faster, is brighter, and its
 // flicker amplitude grows.
 constexpr uint16_t kToxicGreenBasePwm = 700;       // steady green venom glow
-constexpr uint16_t kToxicGreenFlickerPwm = 260;    // bubble amplitude
+constexpr uint16_t kToxicGreenFlickerPwm = 1000;   // bubble amplitude (at full)
 constexpr uint32_t kToxicGreenStepMs = 61;         // bubble refresh interval
 constexpr uint16_t kToxicSparkIdlePwm = 1600;      // spark head, idle
 constexpr uint16_t kToxicSparkHeadPwm = kMaxPwm;   // spark head, frantic
-constexpr uint16_t kToxicSparkFlickerPwm = 250;    // idle spark flicker
-constexpr uint16_t kToxicSparkFranticPwm = 700;    // extra spark flicker when frantic
+constexpr uint16_t kToxicSparkFlickerPwm = 700;    // idle spark flicker (at full)
+constexpr uint16_t kToxicSparkFranticPwm = 1400;   // spark flicker when frantic
 constexpr uint32_t kToxicSparkIdleStepMs = 420;    // ms per eye, idle
 constexpr uint32_t kToxicSparkFastStepMs = 130;    // ms per eye, frantic
 constexpr uint16_t kToxicSparkTailPermille = 900;  // trailing glow: head only

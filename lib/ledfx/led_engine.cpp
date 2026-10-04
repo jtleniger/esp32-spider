@@ -383,12 +383,9 @@ void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
     const uint16_t breath =
         breathePermille((cycleMs % kSmolderPeriodMs) + offsetMs);
 
-    const int32_t orangeBase =
-        kSmolderFloorPwm +
-        static_cast<int32_t>(kMaxPwm - kSmolderFloorPwm) * breath / 1000;
+    const int32_t orangeBase = static_cast<int32_t>(kMaxPwm) * breath / 1000;
     const int32_t redBase =
-        kSmolderFloorPwm +
-        static_cast<int32_t>(kMaxPwm - kSmolderFloorPwm) * (1000 - breath) / 1000;
+        static_cast<int32_t>(kMaxPwm) * (1000 - breath) / 1000;
 
     uint16_t green = 0;
     uint16_t litPermille = 1000;  // scales O/R down while the green flash fades
@@ -401,21 +398,20 @@ void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
       if (elapsed < kGreenTotalMs) {
         const uint16_t envelope = greenEnvelopePermille(elapsed);
         litPermille = static_cast<uint16_t>(1000 - envelope);
-        green = saturatePwm(
-            scalePermille(kMaxPwm, envelope) +
-            scalePermille(flicker(wiring.green, flickerStep, kGreenFlickerPwm),
-                          envelope));
+        green = saturatePwm(withFlicker(scalePermille(kMaxPwm, envelope),
+                                        wiring.green, flickerStep,
+                                        kGreenFlickerPwm));
       }
     }
 
-    out[wiring.orange] = saturatePwm(
-        scalePermille(orangeBase, litPermille) +
-        scalePermille(
-            flicker(wiring.orange, flickerStep, kSmolderFlickerPwm), litPermille));
-    out[wiring.red] = saturatePwm(
-        scalePermille(redBase, litPermille) +
-        scalePermille(flicker(wiring.red, flickerStep, kSmolderFlickerPwm),
-                      litPermille));
+    // Flicker scales with each channel's current brightness, so the dim colour
+    // barely wavers while the bright one keeps a visible flicker.
+    out[wiring.orange] = saturatePwm(withFlicker(
+        scalePermille(orangeBase, litPermille), wiring.orange, flickerStep,
+        kSmolderFlickerPwm));
+    out[wiring.red] = saturatePwm(withFlicker(scalePermille(redBase, litPermille),
+                                              wiring.red, flickerStep,
+                                              kSmolderFlickerPwm));
     out[wiring.green] = green;
   }
 }
@@ -461,7 +457,7 @@ void LedEngine::renderStalker(uint32_t nowMs, bool radarHigh, uint16_t *out) {
       if (slot == 2) {  // green reads brighter, so trim it
         glow = scalePermille(glow, kStalkerGreenPermille);
       }
-      glow += flicker(channel, flickerStep, kStalkerFlickerPwm);
+      glow = withFlicker(glow, channel, flickerStep, kStalkerFlickerPwm);
       if (slot == 0) {
         orange = glow;
       } else if (slot == 1) {
@@ -473,8 +469,8 @@ void LedEngine::renderStalker(uint32_t nowMs, bool radarHigh, uint16_t *out) {
 
     // The motion wake-up is rig-wide red, and it stutters.
     if (alert > 0) {
-      red += scalePermille(kStalkerPopPwm, alert) +
-             flicker(w.red, flickerStep, kStalkerPopFlickerPwm);
+      red = withFlicker(red + scalePermille(kStalkerPopPwm, alert), w.red,
+                        flickerStep, kStalkerPopFlickerPwm);
     }
 
     out[w.orange] = saturatePwm(orange);
@@ -538,9 +534,8 @@ void LedEngine::renderBlink(uint32_t nowMs, uint16_t *out) {
         blinkSeq_ * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x33u,
         kLedsPerEye));
     const uint8_t channel = channels[pick];
-    out[channel] =
-        saturatePwm(kBlinkLevelPwm + flicker(channel, flickerStep,
-                                             kBlinkFlickerPwm));
+    out[channel] = saturatePwm(
+        withFlicker(kBlinkLevelPwm, channel, flickerStep, kBlinkFlickerPwm));
   }
 }
 
@@ -610,10 +605,10 @@ void LedEngine::renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
 
   for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
     const EyeWiring &w = kEyes[eye];
-    out[w.green] = saturatePwm(
-        static_cast<int32_t>(kToxicGreenBasePwm) +
-        flicker(w.green, greenStep, kToxicGreenFlickerPwm) +
-        flicker(w.green, flickerStep, kToxicGreenFlickerPwm / 2));
+    int32_t green = kToxicGreenBasePwm;
+    green = withFlicker(green, w.green, greenStep, kToxicGreenFlickerPwm);
+    green = withFlicker(green, w.green, flickerStep, kToxicGreenFlickerPwm / 2);
+    out[w.green] = saturatePwm(green);
 
     // The tail is shorter than one eye spacing, so only the head eye carries
     // the spark - the glow is isolated rather than a smeared trail.
@@ -626,7 +621,7 @@ void LedEngine::renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
         (kToxicSparkTailPermille - behind) * 1000 / kToxicSparkTailPermille));
     const uint8_t channel = toxicSparkRed_ ? w.red : w.orange;
     out[channel] =
-        saturatePwm(spark + flicker(channel, flickerStep, sparkAmp));
+        saturatePwm(withFlicker(spark, channel, flickerStep, sparkAmp));
   }
 }
 
