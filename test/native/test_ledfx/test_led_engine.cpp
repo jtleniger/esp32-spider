@@ -398,40 +398,47 @@ static void testSmolderIdleLeavesGreenOff() {
   }
 }
 
-// Flicker must scale with a channel's brightness: at the bottom of eye 0's
-// crossfade the dim colour barely wavers, while the full-brightness colour
-// keeps a clearly visible flicker (the old additive model flickered both by the
-// same absolute amount, so the dim colour was as noisy as the bright one).
-static void testSmolderFlickerScalesWithBrightness() {
+// kModeSmolder must hold pure single-colour stretches: through eye 0's red hold
+// the orange LED is fully dark and red is bright and flickering; through the
+// orange hold it is the mirror image. Flicker is proportional to level, so the
+// dark colour shows no flicker at all and the lit one swings by a large, visible
+// fraction of the flicker amplitude.
+static void testSmolderHoldsAreSingleColourAndFlicker() {
   TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSmolder, 0, 0));
   const uint8_t orange = ledfx::kEyes[0].orange;
   const uint8_t red = ledfx::kEyes[0].red;
-  const uint16_t floorFlicker = static_cast<uint16_t>(
-      static_cast<uint32_t>(ledfx::kSmolderFlickerPwm) *
-      ledfx::kSmolderFloorPwm / ledfx::kMaxPwm);
-  uint16_t orangeMin = ledfx::kMaxPwm;
-  uint16_t orangeMax = 0;
+
+  // Eye 0's phase offset is zero, so t < kSmolderDwellMs parks it on the red
+  // hold: red at full power, orange completely off.
   uint16_t redMin = ledfx::kMaxPwm;
-  // Eye 0's phase offset is zero, and t < kSmolderDwellMs parks it on the red
-  // hold: red at full power, orange at its floor.
+  uint16_t redMax = 0;
   for (uint32_t t = 0; t < ledfx::kSmolderDwellMs;
        t += ledfx::kSmolderFlickerStepMs) {
     engine.tick(t, false);
-    const uint16_t o = channelLevel(engine, orange);
+    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, orange));
     const uint16_t r = channelLevel(engine, red);
+    if (r < redMin) redMin = r;
+    if (r > redMax) redMax = r;
+  }
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kMaxPwm, redMax);  // the hold reaches full
+  TEST_ASSERT_TRUE(redMin >= ledfx::kMaxPwm - ledfx::kSmolderFlickerPwm);
+  TEST_ASSERT_TRUE(redMax - redMin >= ledfx::kSmolderFlickerPwm / 2);
+
+  // The orange hold is the mirror image: red is off, orange is bright.
+  const uint32_t orangeHold = ledfx::kSmolderDwellMs + ledfx::kSmolderFadeMs;
+  uint16_t orangeMin = ledfx::kMaxPwm;
+  uint16_t orangeMax = 0;
+  for (uint32_t t = orangeHold; t < orangeHold + ledfx::kSmolderDwellMs;
+       t += ledfx::kSmolderFlickerStepMs) {
+    engine.tick(t, false);
+    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, red));
+    const uint16_t o = channelLevel(engine, orange);
     if (o < orangeMin) orangeMin = o;
     if (o > orangeMax) orangeMax = o;
-    if (r < redMin) redMin = r;
   }
-  // Orange stays within a floor-proportional band...
-  TEST_ASSERT_TRUE(orangeMax <=
-                   ledfx::kSmolderFloorPwm + floorFlicker + 2);
-  TEST_ASSERT_TRUE(orangeMin >=
-                   ledfx::kSmolderFloorPwm - floorFlicker - 2);
-  // ...and much tighter than the full-brightness red's swing...
-  TEST_ASSERT_TRUE((orangeMax - orangeMin) * 2 <= ledfx::kSmolderFlickerPwm);
-  // ...which still dips by a visible fraction of the full flicker amplitude.
-  TEST_ASSERT_TRUE(redMin <= ledfx::kMaxPwm - ledfx::kSmolderFlickerPwm / 2);
+  TEST_ASSERT_EQUAL_UINT16(ledfx::kMaxPwm, orangeMax);
+  TEST_ASSERT_TRUE(orangeMin >= ledfx::kMaxPwm - ledfx::kSmolderFlickerPwm);
+  TEST_ASSERT_TRUE(orangeMax - orangeMin >= ledfx::kSmolderFlickerPwm / 2);
 }
 
 // The whole point of the per-eye phase offsets: at any instant the eyes sit at
@@ -907,7 +914,7 @@ int main(void) {
   RUN_TEST(testSingleChannelIgnoresRadar);
   RUN_TEST(testSingleChannelToPulseRestart);
   RUN_TEST(testSmolderIdleLeavesGreenOff);
-  RUN_TEST(testSmolderFlickerScalesWithBrightness);
+  RUN_TEST(testSmolderHoldsAreSingleColourAndFlicker);
   RUN_TEST(testSmolderEyesAreNotInLockstep);
   RUN_TEST(testSmolderGreenSpreadsEyeByEye);
   RUN_TEST(testSmolderGreenFadesAndEmbersResume);

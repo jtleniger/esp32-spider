@@ -383,12 +383,9 @@ void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
     const uint16_t breath =
         breathePermille((cycleMs % kSmolderPeriodMs) + offsetMs);
 
-    const int32_t orangeBase =
-        kSmolderFloorPwm +
-        static_cast<int32_t>(kMaxPwm - kSmolderFloorPwm) * breath / 1000;
+    const int32_t orangeBase = static_cast<int32_t>(kMaxPwm) * breath / 1000;
     const int32_t redBase =
-        kSmolderFloorPwm +
-        static_cast<int32_t>(kMaxPwm - kSmolderFloorPwm) * (1000 - breath) / 1000;
+        static_cast<int32_t>(kMaxPwm) * (1000 - breath) / 1000;
 
     uint16_t green = 0;
     uint16_t litPermille = 1000;  // scales O/R down while the green flash fades
