@@ -69,11 +69,15 @@ constexpr uint32_t kPulseHalfFastMs = 250;   // 0.5 s cycle while it sees motion
 constexpr uint16_t kPulseLevels = 64;        // brightness rungs per half cycle
 
 // --- kModeSmolder (mode 0) tuning ---
-// Orange and red crossfade on a slow raised-cosine "breathing" curve; both keep
-// a floor glow so the embers never go fully dark. Every eye runs the same curve
-// with its own phase offset (kSmolderEyePhasePermille), so they never pulse in
-// lockstep, and a per-channel pseudo-random flicker is layered on top.
-constexpr uint32_t kSmolderPeriodMs = 4000;     // full O<->R crossfade cycle
+// Orange and red crossfade on a slow "breathing" curve that dwells on each
+// colour before easing across to the other; both keep a floor glow so the embers
+// never go fully dark. Every eye runs the same curve with its own phase offset
+// (kSmolderEyePhasePermille), so they never pulse in lockstep, and a per-channel
+// pseudo-random flicker is layered on top.
+// A full cycle is: hold red, crossfade to orange, hold orange, crossfade back.
+constexpr uint32_t kSmolderDwellMs = 7000;      // hold on one colour, bright
+constexpr uint32_t kSmolderFadeMs = 7000;       // eased crossfade to the other
+constexpr uint32_t kSmolderPeriodMs = 2 * (kSmolderDwellMs + kSmolderFadeMs);
 constexpr uint16_t kSmolderLevels = 64;         // rungs the crossfade quantises to
 constexpr uint16_t kSmolderFloorPwm = 256;      // dimmest ember glow
 constexpr uint16_t kSmolderFlickerPwm = 420;    // +/- ember noise amplitude
