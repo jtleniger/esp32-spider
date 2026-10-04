@@ -7,7 +7,7 @@ namespace {
 
 static_assert(kPulseHalfSlowMs != 0 && kPulseHalfFastMs != 0 && kPulseLevels != 0,
               "kModePulse needs nonzero tuning");
-static_assert(kSmolderPeriodMs != 0 && kSmolderLevels != 0 &&
+static_assert(kSmolderFadeMs != 0 && kSmolderLevels != 0 &&
                   kSmolderFlickerStepMs != 0,
               "kModeSmolder needs nonzero tuning");
 static_assert(kEyeCount * kLedsPerEye == kChannelCount,
@@ -15,12 +15,6 @@ static_assert(kEyeCount * kLedsPerEye == kChannelCount,
 
 // Sentinel for "no green flash has been triggered yet".
 constexpr uint32_t kNoGreenTrigger = 0xFFFFFFFFu;
-
-// Raised cosine sampled at 16 points: the value at i/16 of a full cycle, in
-// permille. 0 at the start, 1000 halfway through, back to 0. breathePermille()
-// interpolates between samples and quantises the result to kSmolderLevels rungs.
-constexpr uint16_t kBreathTable[16] = {0,   38,  146, 309, 500, 691, 854, 962,
-                                       1000, 962, 854, 691, 500, 309, 146, 38};
 
 uint16_t saturatePwm(int32_t value) {
   if (value < 0) {
@@ -41,17 +35,33 @@ uint16_t levelForPulse(uint32_t up, uint32_t halfMs) {
 
 // Orange/red crossfade parameter for a cycle position, in permille (0..1000),
 // quantised to kSmolderLevels rungs so the silent stretches between rungs do not
-// push a frame.
-uint16_t breathePermille(uint32_t cyclePosMs, uint32_t periodMs) {
-  const uint64_t scaled = static_cast<uint64_t>(cyclePosMs) * 16;
-  const uint32_t index = static_cast<uint32_t>(scaled / periodMs) % 16;
-  const uint32_t frac =
-      static_cast<uint32_t>((scaled % periodMs) * 1000 / periodMs);
-  const uint16_t a = kBreathTable[index];
-  const uint16_t b = kBreathTable[(index + 1) % 16];
-  const int32_t lerped =
-      a + static_cast<int32_t>(b - a) * static_cast<int32_t>(frac) / 1000;
-  return static_cast<uint16_t>(lerped * kSmolderLevels / 1000) * 1000 /
+// push a frame. The cycle holds at 0 for kSmolderDwellMs, eases up to 1000 over
+// kSmolderFadeMs, holds, then eases back. The smoothstep easing leaves and
+// enters each hold with zero slope, so the brightness has no kink where the
+// fade meets the dwell.
+uint16_t breathePermille(uint32_t cyclePosMs) {
+  const uint32_t pos = cyclePosMs % kSmolderPeriodMs;
+  const uint32_t riseEnd = kSmolderDwellMs + kSmolderFadeMs;
+  const uint32_t fallStart = 2 * kSmolderDwellMs + kSmolderFadeMs;
+  const uint64_t fadeCubed =
+      static_cast<uint64_t>(kSmolderFadeMs) * kSmolderFadeMs * kSmolderFadeMs;
+  uint32_t permille;
+  if (pos < kSmolderDwellMs) {
+    permille = 0;
+  } else if (pos < riseEnd) {
+    const uint32_t t = pos - kSmolderDwellMs;
+    permille = static_cast<uint32_t>(
+        static_cast<uint64_t>(t) * t * (3 * kSmolderFadeMs - 2 * t) * 1000 /
+        fadeCubed);
+  } else if (pos < fallStart) {
+    permille = 1000;
+  } else {
+    const uint32_t t = pos - fallStart;
+    permille = 1000 - static_cast<uint32_t>(
+                           static_cast<uint64_t>(t) * t *
+                           (3 * kSmolderFadeMs - 2 * t) * 1000 / fadeCubed);
+  }
+  return static_cast<uint16_t>(permille * kSmolderLevels / 1000) * 1000 /
          kSmolderLevels;
 }
 
@@ -197,8 +207,8 @@ void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
     const uint32_t offsetMs =
         static_cast<uint32_t>(kSmolderEyePhasePermille[eye]) * kSmolderPeriodMs /
         1000;
-    const uint16_t breath = breathePermille(
-        (cycleMs + offsetMs) % kSmolderPeriodMs, kSmolderPeriodMs);
+    const uint16_t breath =
+        breathePermille((cycleMs % kSmolderPeriodMs) + offsetMs);
 
     const int32_t orangeBase =
         kSmolderFloorPwm +

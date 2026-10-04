@@ -48,8 +48,10 @@ pio device monitor -b 115200
 ### Modes (`POST /mode?m=<n>`)
 
 - **0 `kModeSmolder`** - the idle look, booted into by `setup()`. Each eye
-  crossfades its orange and red LEDs on a slow raised-cosine "breathing" curve
-  (period `kSmolderPeriodMs`, 4 s) that keeps a floor glow (`kSmolderFloorPwm`),
+  crossfades its orange and red LEDs on a slow "breathing" curve that dwells on
+  one colour (`kSmolderDwellMs`, 7 s), eases across to the other over
+  `kSmolderFadeMs` (7 s) and repeats, for a `kSmolderPeriodMs` full cycle of 28 s.
+  It keeps a floor glow (`kSmolderFloorPwm`),
   with a deterministic per-channel flicker (`kSmolderFlickerPwm`) layered on like
   embers. Every eye gets its own phase offset (`kSmolderEyePhasePermille`), so the
   eyes never pulse in lockstep. A radar rising edge starts the green flash: the
