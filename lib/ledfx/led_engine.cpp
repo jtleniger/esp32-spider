@@ -17,21 +17,26 @@ static_assert(kStalkerPopMs != 0 && kStalkerReleaseMs != 0 &&
               "kModeStalker needs nonzero tuning");
 static_assert(kBlinkOnMs != 0 && kBlinkOffMs != 0 &&
                   kBlinkMinGapMs < kBlinkMaxGapMs && kBlinkDoubleOneIn != 0 &&
-                  kBlinkLevelPwm != 0,
+                  kBlinkLevelPwm > kBlinkFlickerPwm && kBlinkFlickerStepMs != 0,
               "kModeBlink needs nonzero tuning");
 static_assert(kHeartbeatThumpMs >= 2 && kHeartbeatLevels != 0 &&
                   kHeartbeatCalmPeriodMs > kHeartbeatFastPeriodMs &&
                   kHeartbeatEscalateMs != 0 && kHeartbeatCoolMs != 0 &&
+                  kHeartbeatFlickerStepMs != 0 &&
                   kHeartbeatFastPeriodMs >= kHeartbeatDubDelayMs + kHeartbeatThumpMs,
               "kModeHeartbeat needs consistent tuning");
 static_assert(kToxicSparkIdleStepMs > kToxicSparkFastStepMs &&
                   kToxicSparkFastStepMs != 0 && kToxicSparkTailPermille != 0 &&
+                  kToxicSparkTailPermille <= 1000 &&
                   kToxicGreenStepMs != 0 && kToxicFlickerStepMs != 0 &&
                   kToxicMotionRampMs != 0,
               "kModeToxic needs nonzero tuning");
 static_assert(kHypnoSlowStepMs > kHypnoFastStepMs && kHypnoFastStepMs != 0 &&
                   kHypnoTailPermille != 0 &&
-                  kHypnoTailPermille <= kEyeCount * 1000,
+                  kHypnoTailPermille <= kEyeCount * 1000 &&
+                  kHypnoFlickerStepMs != 0 && kHypnoSurgePeriodMs != 0 &&
+                  kHypnoHeadPwm > kHypnoFlickerPwm &&
+                  kHypnoSurgePermille < 1000,
               "kModeHypnotic needs consistent tuning");
 
 // Sentinel for "no green flash has been triggered yet".
@@ -113,6 +118,34 @@ uint32_t hashRange(uint32_t seed, uint32_t span) { return hash32(seed) % span; }
 
 int32_t scalePermille(int32_t value, uint16_t permille) {
   return static_cast<int32_t>(static_cast<int64_t>(value) * permille / 1000);
+}
+
+// Adds per-channel flicker to a lit base level, scaling the amplitude by how
+// bright the base is: a base at kMaxPwm gets the full `amplitude`, a dimmer one
+// proportionally less, and an unlit channel is left at exactly zero.
+int32_t withFlicker(int32_t base, uint8_t channel, uint32_t step,
+                    uint16_t amplitude) {
+  if (base <= 0) {
+    return 0;
+  }
+  uint32_t permille = static_cast<uint32_t>(base) * 1000 / kMaxPwm;
+  if (permille > 1000) {
+    permille = 1000;
+  }
+  return base + scalePermille(flicker(channel, step, amplitude),
+                              static_cast<uint16_t>(permille));
+}
+
+// Triangle wave in [-amp, amp] permille over `periodMs`, driven by absolute
+// `nowMs`. Used to modulate the kModeHypnotic chase rate so it never runs at a
+// constant speed.
+int32_t trianglePermille(uint32_t nowMs, uint32_t periodMs, uint16_t amp) {
+  const uint32_t pos = nowMs % periodMs;
+  const uint32_t half = periodMs / 2;
+  const uint32_t tri = (pos < half) ? pos : (periodMs - pos);  // 0..half
+  return static_cast<int32_t>(
+             static_cast<uint64_t>(tri) * (2 * amp) / periodMs) -
+         amp;
 }
 
 // Linear interpolation: `from` at permille 0, `to` at permille 1000.
@@ -213,8 +246,11 @@ LedEngine::LedEngine()
       heartbeatLastTickMs_(0),
       toxicMotion_(0),
       toxicSparkPhase_(0),
+      toxicCycle_(0),
+      toxicSparkRed_(false),
       toxicLastTickMs_(0),
       hypnoPhase_(0),
+      hypnoCycle_(0),
       hypnoLastTickMs_(0),
       active_(false) {}
 
@@ -247,8 +283,11 @@ bool LedEngine::setMode(uint16_t mode, uint16_t channel, uint32_t nowMs) {
   heartbeatLastTickMs_ = nowMs;
   toxicMotion_ = 0;
   toxicSparkPhase_ = 0;
+  toxicCycle_ = 0;
+  toxicSparkRed_ = hashRange(0x9E3779B9u, 2) != 0;
   toxicLastTickMs_ = nowMs;
   hypnoPhase_ = 0;
+  hypnoCycle_ = 0;
   hypnoLastTickMs_ = nowMs;
   active_ = true;
   std::memset(frame_, 0, sizeof(frame_));
@@ -389,6 +428,8 @@ void LedEngine::renderStalker(uint32_t nowMs, bool radarHigh, uint16_t *out) {
   const uint16_t alert = permilleOf(stalkerAlert_);
 
   const uint32_t scanMs = nowMs - stalkerStartMs_;  // wraparound is intentional
+  const uint32_t pass =
+      scanMs / (static_cast<uint32_t>(kStalkerStepMs) * kEyeCount);
   const uint8_t head = static_cast<uint8_t>((scanMs / kStalkerStepMs) % kEyeCount);
   const uint8_t next = static_cast<uint8_t>((head + 1) % kEyeCount);
   const uint16_t frac = static_cast<uint16_t>(
@@ -402,22 +443,40 @@ void LedEngine::renderStalker(uint32_t nowMs, bool radarHigh, uint16_t *out) {
     } else if (eye == next) {
       weight = frac;
     }
-
-    // The dim scan only reaches the head/next eyes, but the pop is rig-wide:
-    // every eye ramps to red on motion. An unlit eye (weight 0, alert 0) stays
-    // exactly 0.
-    const int32_t glow =
-        scalePermille(scalePermille(kStalkerDimPwm, weight),
-                      static_cast<uint16_t>(1000 - alert));
-    const int32_t pop = scalePermille(kStalkerPopPwm, alert);
     const EyeWiring &w = kEyes[eye];
 
-    const int32_t orange = glow + (glow > 0
-        ? flicker(w.orange, flickerStep, kStalkerFlickerPwm) : 0);
-    const int32_t red = glow + pop + ((glow + pop) > 0
-        ? flicker(w.red, flickerStep, kStalkerFlickerPwm) : 0);
-    const int32_t green = glow + (glow > 0
-        ? flicker(w.green, flickerStep, kStalkerFlickerPwm) : 0);
+    int32_t orange = 0;
+    int32_t red = 0;
+    int32_t green = 0;
+    if (weight > 0) {
+      // Each eye scans in one pseudo-random colour; the pass index reshuffles
+      // the palette every lap so the rig does not settle into a pattern.
+      const uint8_t slot = static_cast<uint8_t>(hashRange(
+          static_cast<uint32_t>(eye) * 2654435761u + pass * 40503u + 0x5Au,
+          kLedsPerEye));
+      const uint8_t channel =
+          slot == 0 ? w.orange : (slot == 1 ? w.red : w.green);
+      int32_t glow = scalePermille(scalePermille(kStalkerDimPwm, weight),
+                                   static_cast<uint16_t>(1000 - alert));
+      if (slot == 2) {  // green reads brighter, so trim it
+        glow = scalePermille(glow, kStalkerGreenPermille);
+      }
+      glow += flicker(channel, flickerStep, kStalkerFlickerPwm);
+      if (slot == 0) {
+        orange = glow;
+      } else if (slot == 1) {
+        red = glow;
+      } else {
+        green = glow;
+      }
+    }
+
+    // The motion wake-up is rig-wide red, and it stutters.
+    if (alert > 0) {
+      red += scalePermille(kStalkerPopPwm, alert) +
+             flicker(w.red, flickerStep, kStalkerPopFlickerPwm);
+    }
+
     out[w.orange] = saturatePwm(orange);
     out[w.red] = saturatePwm(red);
     out[w.green] = saturatePwm(green);
@@ -467,28 +526,21 @@ void LedEngine::renderBlink(uint32_t nowMs, uint16_t *out) {
     return;  // dark gap inside a double blink
   }
 
+  const uint32_t flickerStep = nowMs / kBlinkFlickerStepMs;
   for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
     if (((blinkMask_ >> eye) & 1u) == 0) {
       continue;
     }
     const EyeWiring &w = kEyes[eye];
     const uint8_t channels[kLedsPerEye] = {w.orange, w.red, w.green};
-    bool anyLit = false;
-    for (uint8_t i = 0; i < kLedsPerEye; ++i) {
-      const uint32_t seed = blinkSeq_ * 2654435761u +
-                            static_cast<uint32_t>(eye) * 40503u +
-                            static_cast<uint32_t>(i) * 0x9E37u + 0x33u;
-      if (hashRange(seed, 1000) < kBlinkLedPermille) {
-        out[channels[i]] = kBlinkLevelPwm;
-        anyLit = true;
-      }
-    }
-    if (!anyLit) {  // every blinking eye shows at least one colour
-      const uint8_t pick = static_cast<uint8_t>(
-          hashRange(blinkSeq_ * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x99u,
-                    kLedsPerEye));
-      out[channels[pick]] = kBlinkLevelPwm;
-    }
+    // One pseudo-random colour per eye per blink, sputtering on the way.
+    const uint8_t pick = static_cast<uint8_t>(hashRange(
+        blinkSeq_ * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x33u,
+        kLedsPerEye));
+    const uint8_t channel = channels[pick];
+    out[channel] =
+        saturatePwm(kBlinkLevelPwm + flicker(channel, flickerStep,
+                                             kBlinkFlickerPwm));
   }
 }
 
@@ -512,14 +564,20 @@ void LedEngine::renderHeartbeat(uint32_t nowMs, bool radarHigh, uint16_t *out) {
 
   const int32_t beat = scalePermille(kMaxPwm, thumpEnergyPermille(beatPhaseMs_));
   const int32_t red = scalePermille(beat, agitation);
-  const int32_t green = scalePermille(beat, static_cast<uint16_t>(1000 - agitation));
+  const int32_t green = scalePermille(
+      scalePermille(beat, static_cast<uint16_t>(1000 - agitation)),
+      kHeartbeatGreenPermille);
   const int32_t orange = scalePermille(red, kHeartbeatOrangePermille);
+  const uint32_t flickerStep = nowMs / kHeartbeatFlickerStepMs;
 
   for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
     const EyeWiring &w = kEyes[eye];
-    out[w.red] = saturatePwm(red);
-    out[w.green] = saturatePwm(green);
-    out[w.orange] = saturatePwm(orange);
+    out[w.red] = saturatePwm(
+        withFlicker(red, w.red, flickerStep, kHeartbeatFlickerPwm));
+    out[w.green] = saturatePwm(
+        withFlicker(green, w.green, flickerStep, kHeartbeatFlickerPwm));
+    out[w.orange] = saturatePwm(
+        withFlicker(orange, w.orange, flickerStep, kHeartbeatFlickerPwm));
   }
 }
 
@@ -533,14 +591,20 @@ void LedEngine::renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
       static_cast<int32_t>(kToxicSparkIdleStepMs),
       static_cast<int32_t>(kToxicSparkFastStepMs), motion));
   const uint32_t total = kEyeCount * 1000u;
+  const uint32_t before = toxicSparkPhase_;
   toxicSparkPhase_ = (toxicSparkPhase_ + static_cast<uint32_t>(
       static_cast<uint64_t>(dt) * 1000 / stepMs)) % total;
+  if (toxicSparkPhase_ < before) {
+    // A new lap: pick the spark's colour for this revolution.
+    ++toxicCycle_;
+    toxicSparkRed_ = hashRange(toxicCycle_ * 2654435761u + 0x7u, 2) != 0;
+  }
 
   const uint16_t sparkPeak =
       static_cast<uint16_t>(lerpPermille(kToxicSparkIdlePwm, kMaxPwm, motion));
-  const uint16_t orangeAmp =
-      static_cast<uint16_t>(lerpPermille(kToxicOrangeFlickerPwm,
-                                         kToxicOrangeFranticPwm, motion));
+  const uint16_t sparkAmp =
+      static_cast<uint16_t>(lerpPermille(kToxicSparkFlickerPwm,
+                                         kToxicSparkFranticPwm, motion));
   const uint32_t greenStep = nowMs / kToxicGreenStepMs;
   const uint32_t flickerStep = nowMs / kToxicFlickerStepMs;
 
@@ -551,15 +615,18 @@ void LedEngine::renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
         flicker(w.green, greenStep, kToxicGreenFlickerPwm) +
         flicker(w.green, flickerStep, kToxicGreenFlickerPwm / 2));
 
+    // The tail is shorter than one eye spacing, so only the head eye carries
+    // the spark - the glow is isolated rather than a smeared trail.
     const uint32_t behind =
         (toxicSparkPhase_ + total - static_cast<uint32_t>(eye) * 1000u) % total;
-    int32_t spark = 0;
-    if (behind < kToxicSparkTailPermille) {
-      spark = scalePermille(sparkPeak, static_cast<uint16_t>(
-          (kToxicSparkTailPermille - behind) * 1000 / kToxicSparkTailPermille));
+    if (behind >= kToxicSparkTailPermille) {
+      continue;
     }
-    out[w.orange] = saturatePwm(spark +
-        flicker(w.orange, flickerStep, orangeAmp));
+    const int32_t spark = scalePermille(sparkPeak, static_cast<uint16_t>(
+        (kToxicSparkTailPermille - behind) * 1000 / kToxicSparkTailPermille));
+    const uint8_t channel = toxicSparkRed_ ? w.red : w.orange;
+    out[channel] =
+        saturatePwm(spark + flicker(channel, flickerStep, sparkAmp));
   }
 }
 
@@ -568,9 +635,21 @@ void LedEngine::renderHypnotic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
   hypnoLastTickMs_ = nowMs;
   const uint32_t stepMs = radarHigh ? kHypnoFastStepMs : kHypnoSlowStepMs;
   const uint32_t total = kEyeCount * 1000u;
-  hypnoPhase_ = (hypnoPhase_ + static_cast<uint32_t>(
-      static_cast<uint64_t>(dt) * 1000 / stepMs)) % total;
 
+  // Mix the base rate with a triangle wave, so the chase surges and eases
+  // instead of marching at one steady speed.
+  const int32_t surge =
+      trianglePermille(nowMs, kHypnoSurgePeriodMs, kHypnoSurgePermille);
+  const uint32_t rate = static_cast<uint32_t>(1000 + surge);
+  const uint32_t before = hypnoPhase_;
+  const uint32_t advance = static_cast<uint32_t>(
+      static_cast<uint64_t>(dt) * 1000 / stepMs * rate / 1000);
+  hypnoPhase_ = (hypnoPhase_ + advance) % total;
+  if (hypnoPhase_ < before) {
+    ++hypnoCycle_;  // a new lap: reshuffle the colour palette
+  }
+
+  const uint32_t flickerStep = nowMs / kHypnoFlickerStepMs;
   for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
     const uint32_t behind =
         (hypnoPhase_ + total - static_cast<uint32_t>(eye) * 1000u) % total;
@@ -579,20 +658,15 @@ void LedEngine::renderHypnotic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
     }
     const uint16_t intensity = static_cast<uint16_t>(
         (kHypnoTailPermille - behind) * 1000 / kHypnoTailPermille);
-    const uint16_t level =
-        static_cast<uint16_t>(scalePermille(kHypnoHeadPwm, intensity));
+    const uint8_t slot = static_cast<uint8_t>(hashRange(
+        static_cast<uint32_t>(eye) * 2654435761u + hypnoCycle_ * 40503u + 0x2Bu,
+        kLedsPerEye));
     const EyeWiring &w = kEyes[eye];
-    switch (eye % kLedsPerEye) {
-      case 0:
-        out[w.orange] = level;
-        break;
-      case 1:
-        out[w.red] = level;
-        break;
-      default:
-        out[w.green] = level;
-        break;
-    }
+    const uint8_t channel =
+        slot == 0 ? w.orange : (slot == 1 ? w.red : w.green);
+    const int32_t level = scalePermille(kHypnoHeadPwm, intensity);
+    out[channel] = saturatePwm(
+        withFlicker(level, channel, flickerStep, kHypnoFlickerPwm));
   }
 }
 

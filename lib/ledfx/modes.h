@@ -18,20 +18,22 @@ enum Mode : uint16_t {
   // Every channel breathes in lockstep. Runs until another mode is selected;
   // the radar input shortens the cycle while it sees motion.
   kModePulse = 2,
-  // Stalker: one dim eye at a time scans around the rig; motion ramps every eye
-  // up to the bright red pop, then back to scanning when motion stops.
+  // Stalker: one dim eye at a time scans around the rig, each lit in a random
+  // colour; motion ramps every eye to the stuttering bright red pop, then back
+  // to scanning when motion stops.
   kModeStalker = 3,
-  // Blink: a random group of eyes flashes for a short burst, occasionally a
-  // double blink, then darkness until the next hashed interval. Ignores radar.
+  // Blink: a random group of eyes flashes in single random colours, sputtering
+  // and occasionally doubling, then darkness until the next hashed interval.
+  // Ignores radar.
   kModeBlink = 4,
-  // Heartbeat: a lub-dub pulse; beats are green when calm and red as motion
-  // persists, and the beat period shortens with agitation.
+  // Heartbeat: a flickery lub-dub pulse; beats are green when calm and red as
+  // motion persists, and the beat period shortens with agitation.
   kModeHeartbeat = 5,
-  // Toxic: green bubbling base with a travelling orange spark; motion makes the
-  // spark faster and the flicker frantic.
+  // Toxic: dim green bubbling base with an isolated spark that is randomly
+  // orange or red; motion makes the spark faster and the flicker frantic.
   kModeToxic = 6,
-  // Hypnotic: a three-colour chase rotating around the eyes; the radar speeds it
-  // up.
+  // Hypnotic: a randomly coloured chase rotating around the eyes at a
+  // periodically varying rate; the radar speeds it up.
   kModeHypnotic = 7,
 };
 

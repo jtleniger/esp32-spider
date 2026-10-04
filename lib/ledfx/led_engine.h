@@ -48,24 +48,26 @@ class LedEngine {
   // green motion flash, into `out`. `radarHigh` starts a flash on its rising edge.
   void renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
-  // kModeStalker: scans one dim eye around the rig; a radar level ramps every
-  // eye to the bright red pop.
+  // kModeStalker: scans one dim eye (in a random colour) around the rig; a
+  // radar level ramps every eye to the stuttering bright red pop.
   void renderStalker(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
-  // kModeBlink: lights a random group of eyes for a short burst, occasionally a
-  // double blink, then darkness until the next hashed interval.
+  // kModeBlink: lights a random group of eyes in single random colours for a
+  // sputtering burst, occasionally a double blink, then darkness until the next
+  // hashed interval.
   void renderBlink(uint32_t nowMs, uint16_t *out);
 
-  // kModeHeartbeat: a lub-dub pulse; calm beats are green, agitated beats red,
-  // and motion both raises agitation and shortens the beat.
+  // kModeHeartbeat: a flickery lub-dub pulse; calm beats are green, agitated
+  // beats red, and motion both raises agitation and shortens the beat.
   void renderHeartbeat(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
-  // kModeToxic: green bubbling base with a travelling orange spark; motion
-  // speeds the spark up and makes the flicker frantic.
+  // kModeToxic: dim green bubbling base with an isolated spark that is orange or
+  // red (random per revolution); motion speeds the spark up and makes the
+  // flicker frantic.
   void renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
-  // kModeHypnotic: a three-colour chase rotating around the eyes; the radar
-  // speeds it up.
+  // kModeHypnotic: a random-coloured chase rotating around the eyes with a
+  // periodically modulated rate and a flicker; the radar speeds it up.
   void renderHypnotic(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
   uint16_t frame_[kChannelCount];
@@ -92,8 +94,11 @@ class LedEngine {
   uint32_t heartbeatLastTickMs_;
   uint32_t toxicMotion_;        // kModeToxic: Q16 idle(0)..frantic(1<<16)
   uint32_t toxicSparkPhase_;    // kModeToxic: spark position, eye-permille units
+  uint32_t toxicCycle_;         // kModeToxic: completed spark revolutions
+  bool toxicSparkRed_;          // kModeToxic: current revolution rides red
   uint32_t toxicLastTickMs_;
   uint32_t hypnoPhase_;         // kModeHypnotic: chase position, eye-permille units
+  uint32_t hypnoCycle_;         // kModeHypnotic: completed chase revolutions
   uint32_t hypnoLastTickMs_;
   bool active_;              // false until the first setMode()
 };
