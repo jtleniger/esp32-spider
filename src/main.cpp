@@ -98,8 +98,8 @@ void setup() {
   Serial.begin(115200);
 
   // HLK-LD1020 radar output: driven high on detection. Read on every loop tick;
-  // kModeSmolder turns it into the green flash and kModePulse uses it to shorten
-  // its cycle. Pulled down so a disconnected module never reads as detection.
+  // the effect decides what to do with the level (see the mode list in
+  // AGENTS.md). Pulled down so a disconnected module never reads as detection.
   pinMode(ledfx::kRadarPin, INPUT_PULLDOWN);
 
   if (!tlc.begin()) {
