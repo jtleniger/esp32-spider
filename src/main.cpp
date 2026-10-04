@@ -97,9 +97,9 @@ void maintainWifi(uint32_t nowMs) {
 void setup() {
   Serial.begin(115200);
 
-  // HLK-LD1020 radar output: driven high on detection. Read on every loop tick
-  // and used only by mode 0. Pulled down so a disconnected module never reads
-  // as detection.
+  // HLK-LD1020 radar output: driven high on detection. Read on every loop tick;
+  // kModeSmolder turns it into the green flash and kModePulse uses it to shorten
+  // its cycle. Pulled down so a disconnected module never reads as detection.
   pinMode(ledfx::kRadarPin, INPUT_PULLDOWN);
 
   if (!tlc.begin()) {
@@ -114,7 +114,7 @@ void setup() {
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
 
-  engine.setMode(ledfx::kModePulse, 0, millis());  // breathe after boot, fast on motion
+  engine.setMode(ledfx::kModeSmolder, 0, millis());  // embers while idle, green flash on motion
 }
 
 void loop() {

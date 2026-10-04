@@ -45,8 +45,8 @@ void testParseRejectEmpty() {
 }
 
 void testParseRejectOutOfRange() {
-  assertRejected("2");  // parses as a number, but kModeCount is 2
-  assertRejected("3");
+  assertRejected("3");  // parses as a number, but kModeCount is 3
+  assertRejected("4");
 }
 
 void testParseRejectLargeValues() {

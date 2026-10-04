@@ -21,13 +21,14 @@ pio device monitor -b 115200
 
 |Path|Role|
 |---|---|
-|`lib/ledfx/led_layout.h`|single source of truth: pins, fitted channel range, PWM range, pulse tuning|
-|`lib/ledfx/modes.h`|`Mode` enum (`kModePulse` = 0, `kModeSingleChannel` = 1), `kModeCount`, `parseModeArg`, `parseChannelArg`|
+|`lib/ledfx/led_layout.h`|single source of truth: pins, braid/eye wiring (`kEyes`), PWM range, pulse and smolder tuning|
+|`lib/ledfx/modes.h`|`Mode` enum (`kModeSmolder` = 0, `kModeSingleChannel` = 1, `kModePulse` = 2), `kModeCount`, `parseModeArg`, `parseChannelArg`|
 |`lib/ledfx/led_engine.{h,cpp}`|pure effect engine - no Arduino headers, fully host-testable|
 |`src/main.cpp`|ESP32-only glue: WiFi, `WebServer`, `Adafruit_TLC5947`, radar read|
 |`test/native/test_ledfx/`|host Unity suite `native/ledfx`|
 |`include/secrets.h(.example)`|WiFi credentials; the real header is git-ignored|
 |`PINS.md`|physical wiring|
+|`CHANNELS.md`|hand-maintained channel -> braid/colour wiring; `kEyes` mirrors it|
 
 ## Architecture
 
@@ -37,22 +38,35 @@ pio device monitor -b 115200
 - `LedEngine::tick` returns true only when a channel value changed; `main.cpp`
   pushes a TLC5947 frame on true and otherwise does nothing. Do not push frames
   unconditionally: the driver bit-bangs 24x12 bits per write.
-- `kModePulse` drives only the fitted channels (`kFirstChannel..kLastChannel`);
-  the rest of the frame stays 0. `kModeSingleChannel` drives exactly the one
-  channel named by the request, fitted or empty. Which channel carries which
-  colour is still unmapped; `kModeSingleChannel` is how it gets mapped.
-- `loop()` has no `delay()`; the pulse and HTTP serving must keep coexisting.
+- Every channel 0..kChannelCount-1 now drives an LED, so the effects fill the
+  whole frame. Each channel belongs to exactly one eye (`kEyes`): one braid (a
+  physical cable) with one LED of each colour. `kModeSmolder` renders per eye;
+  `kModePulse` ignores the table and drives every channel in lockstep;
+  `kModeSingleChannel` drives exactly the one channel named by the request.
+- `loop()` has no `delay()`; the effect and HTTP serving must keep coexisting.
 
 ### Modes (`POST /mode?m=<n>`)
 
-- **0 `kModePulse`** - every fitted channel breathes in lockstep, forever. Cycle is
+- **0 `kModeSmolder`** - the idle look, booted into by `setup()`. Each eye
+  crossfades its orange and red LEDs on a slow raised-cosine "breathing" curve
+  (period `kSmolderPeriodMs`, 4 s) that keeps a floor glow (`kSmolderFloorPwm`),
+  with a deterministic per-channel flicker (`kSmolderFlickerPwm`) layered on like
+  embers. Every eye gets its own phase offset (`kSmolderEyePhasePermille`), so the
+  eyes never pulse in lockstep. A radar rising edge starts the green flash: the
+  greens snap on one eye at a time (`kGreenSpreadMs`), hold `kGreenHoldMs` with
+  flicker, then fade over `kGreenFadeMs` while orange and red resume. The radar
+  level matters only for that rising edge.
+- **1 `kModeSingleChannel`** - lights exactly the channel named by `?c=<channel>`
+  at full PWM (`kMaxPwm`) and holds it; every other channel stays off. Ignores
+  the radar. Used to identify a physical LED during wiring checks: issue `c=6`,
+  note the LED, then `c=7`, and so on.
+- **2 `kModePulse`** - every channel breathes in lockstep, forever. Cycle is
   `2*kPulseHalfSlowMs` (2 s) while the radar pin is low and `2*kPulseHalfFastMs`
   (0.5 s) while it is high. The phase is carried across a speed switch, so the
   brightness does not jump.
-- **1 `kModeSingleChannel`** - lights exactly the channel named by `?c=<channel>`
-  at full PWM (`kMaxPwm`) and holds it; every other channel stays off. Ignores
-  the radar. Used to identify which physical LED a channel drives: issue
-  `c=6`, note the LED, then `c=7`, and so on.
+- The smolder flicker uses an integer hash (`flicker()` in `led_engine.cpp`)
+  rather than `rand()`: the engine must stay deterministic so the host tests can
+  assert bounds, and `lib/ledfx` stays allocation-free.
 - Mode numbers are the enum values and are part of the HTTP contract; adding a
   mode means adding an enumerator before `kModeCount` and a branch in
   `LedEngine::tick`. Never renumber an existing mode.
@@ -93,4 +107,5 @@ pio device monitor -b 115200
   flashing, and a radar module that idles high can interfere with the boot mode.
   The code uses `INPUT_PULLDOWN`; this is a hardware note, not a code fix.
 - Verification here is host tests + a firmware compile only. Flashing, the HTTP
-  endpoints and the visual pulse/channel selection must be checked on the board.
+  endpoints and the visual smolder/pulse/channel selection must be checked on
+  the board.
