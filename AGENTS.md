@@ -21,8 +21,8 @@ pio device monitor -b 115200
 
 |Path|Role|
 |---|---|
-|`lib/ledfx/led_layout.h`|single source of truth: pins, braid/eye wiring (`kEyes`), PWM range, pulse and smolder tuning|
-|`lib/ledfx/modes.h`|`Mode` enum (`kModeSmolder` = 0, `kModeSingleChannel` = 1, `kModePulse` = 2), `kModeCount`, `parseModeArg`, `parseChannelArg`|
+|`lib/ledfx/led_layout.h`|single source of truth: pins, braid/eye wiring (`kEyes`), PWM range, and the tuning constants for every effect besides `kModeSingleChannel`|
+|`lib/ledfx/modes.h`|`Mode` enum (`kModeSmolder` = 0, `kModeSingleChannel` = 1, `kModePulse` = 2, `kModeStalker` = 3, `kModeBlink` = 4, `kModeHeartbeat` = 5, `kModeToxic` = 6, `kModeHypnotic` = 7), `kModeCount`, `parseModeArg`, `parseChannelArg`|
 |`lib/ledfx/led_engine.{h,cpp}`|pure effect engine - no Arduino headers, fully host-testable|
 |`src/main.cpp`|ESP32-only glue: WiFi, `WebServer`, `Adafruit_TLC5947`, radar read|
 |`test/native/test_ledfx/`|host Unity suite `native/ledfx`|
@@ -43,6 +43,9 @@ pio device monitor -b 115200
   physical cable) with one LED of each colour. `kModeSmolder` renders per eye;
   `kModePulse` ignores the table and drives every channel in lockstep;
   `kModeSingleChannel` drives exactly the one channel named by the request.
+  `kModeStalker`, `kModeToxic` and `kModeHypnotic` also work per eye (the toxic
+  and hypnotic effects leave the red or non-chase LEDs dark), and `kModeBlink`
+  lights a hashed subset of eyes; all are stitched together through `kEyes`.
 - `loop()` has no `delay()`; the effect and HTTP serving must keep coexisting.
 
 ### Modes (`POST /mode?m=<n>`)
@@ -66,6 +69,32 @@ pio device monitor -b 115200
   `2*kPulseHalfSlowMs` (2 s) while the radar pin is low and `2*kPulseHalfFastMs`
   (0.5 s) while it is high. The phase is carried across a speed switch, so the
   brightness does not jump.
+- **3 `kModeStalker`** - one dim eye at a time scans around the rig (a
+  `kStalkerStepMs` dwell, crossfaded to the next eye), with a subtle shimmer.
+  The radar is a level, not an edge: while it is high an alert integrator ramps
+  every eye to the bright red `kStalkerPopPwm` pop (`kStalkerPopMs` up,
+  `kStalkerReleaseMs` down), which fades the dim scan out and back in.
+- **4 `kModeBlink`** - ignores the radar. A hashed subset of eyes
+  (`kBlinkGroupPermille`) flashes for `kBlinkOnMs`; one blink in
+  `kBlinkDoubleOneIn` is a double blink (`kBlinkOffMs` dark gap between pulses).
+  Within a blinking eye each of its three LEDs lights independently
+  (`kBlinkLedPermille`), so the eyes show random colour mixes. Gaps between
+  blinks are hashed from `kBlinkMinGapMs`..`kBlinkMaxGapMs`.
+- **5 `kModeHeartbeat`** - a "lub-dub" pair of thumps per beat, in green while
+  calm and red as motion persists. The radar drives an agitation integrator
+  (`kHeartbeatEscalateMs` up, `kHeartbeatCoolMs` down) that both recolours and
+  shortens the beat (`kHeartbeatCalmPeriodMs`..`kHeartbeatFastPeriodMs`). Orange
+  pulses as `kHeartbeatOrangePermille` of the red beat.
+- **6 `kModeToxic`** - a green bubbling base (`kToxicGreenBasePwm` with a per-
+  channel flicker) with a travelling orange spark that runs around the eye ring
+  at `kToxicSparkIdleStepMs` per eye and leaves a trailing glow
+  (`kToxicSparkTailPermille`). The radar ramps the spark toward frantic: faster
+  (`kToxicSparkFastStepMs`), brighter and a wider flicker. The red LEDs stay off.
+- **7 `kModeHypnotic`** - a chase head rotates forward around the eye ring at
+  `kHypnoSlowStepMs` per eye; each eye lights one LED by `eye % kLedsPerEye`, so
+  the ring reads orange, red, green, orange, ... A trailing glow
+  (`kHypnoTailPermille`) sits behind the head. The radar level selects the fast
+  step (`kHypnoFastStepMs`); the direction stays forward.
 - The smolder flicker uses an integer hash (`flicker()` in `led_engine.cpp`)
   rather than `rand()`: the engine must stay deterministic so the host tests can
   assert bounds, and `lib/ledfx` stays allocation-free.

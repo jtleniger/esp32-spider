@@ -45,14 +45,22 @@ void testParseRejectEmpty() {
 }
 
 void testParseRejectOutOfRange() {
-  assertRejected("3");  // parses as a number, but kModeCount is 3
-  assertRejected("4");
+  assertRejected("8");  // parses as a number, but kModeCount is 8
+  assertRejected("9");
 }
 
 void testParseRejectLargeValues() {
-  assertRejected("7");
+  assertRejected("8");
   assertRejected("65536");
   assertRejected("99999999999999999999");
+}
+
+void testParseAcceptNewModes() {
+  uint16_t out = 0xFFFF;
+  TEST_ASSERT_TRUE(ledfx::parseModeArg("3", out));
+  TEST_ASSERT_EQUAL_UINT16(3, out);
+  TEST_ASSERT_TRUE(ledfx::parseModeArg("7", out));  // kModeCount - 1
+  TEST_ASSERT_EQUAL_UINT16(7, out);
 }
 
 void testParseRejectNonDigits() {
