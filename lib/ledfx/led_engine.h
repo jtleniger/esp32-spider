@@ -7,6 +7,21 @@
 
 namespace ledfx {
 
+// kModeSmolder (mode 0) sleep/wake sub-state, observable for tests.
+enum SmolderState : uint8_t {
+  kSmolderAwake = 0,     // embers: the orange/red crossfade
+  kSmolderAsleep = 1,    // dark, with occasional eye-opening gestures
+  kSmolderAgitated = 2,  // one green agitation animation
+};
+
+// Green-only agitation animations kModeSmolder picks at random.
+enum AgitationKind : uint8_t {
+  kAgitationRipple = 0,  // original eye-by-eye green spread, looping
+  kAgitationSweep = 1,   // bright green eye sweeping left<->right
+  kAgitationDart = 2,    // random single eyes snapping green
+};
+constexpr uint8_t kAgitationKindCount = 3;
+
 // Pure effect engine. No Arduino/hardware dependency: every state change is
 // driven by the caller-supplied millisecond timestamp and radar level, so it is
 // host-testable. Channel values are raw 12-bit PWM (0..kMaxPwm); there is no RGB
@@ -24,13 +39,17 @@ class LedEngine {
 
   uint16_t mode() const { return mode_; }
 
+  SmolderState smolderState() const { return smolderState_; }
+  uint8_t agitationKind() const { return agitationKind_; }
+
   // Recomputes every channel for time `nowMs`. `radarHigh` is the raw
-  // HLK-LD1020 output level; it affects kModeSmolder (green flash), kModePulse
-  // (cycle speed), kModeStalker (pop), kModeHeartbeat (agitation), kModeToxic
-  // (frantic ramp) and kModeHypnotic (chase speed); kModeSingleChannel and
-  // kModeBlink ignore it. Returns true when any channel value changed since
-  // the previous tick, i.e. when the frame must be pushed. Until the first
-  // setMode() the engine stays all-off and returns false.
+  // HLK-LD1020 output level; it affects kModeSmolder (sleep/wake machine and
+  // green agitation), kModePulse (cycle speed), kModeStalker (pop),
+  // kModeHeartbeat (agitation), kModeToxic (frantic ramp) and kModeHypnotic
+  // (chase speed); kModeSingleChannel and kModeBlink ignore it. Returns true
+  // when any channel value changed since the previous tick, i.e. when the frame
+  // must be pushed. Until the first setMode() the engine stays all-off and
+  // returns false.
   bool tick(uint32_t nowMs, bool radarHigh);
 
   // kChannelCount raw 12-bit PWM values (0..kMaxPwm), index == channel number.
@@ -44,9 +63,21 @@ class LedEngine {
   // and fills `out` with the resulting level.
   void renderPulse(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
-  // kModeSmolder: renders the per-eye orange/red crossfade with flicker, and the
-  // green motion flash, into `out`. `radarHigh` starts a flash on its rising edge.
+  // kModeSmolder: dispatches on smolderState_, advancing the state machine on
+  // radar motion, the sleep hazard, the nap timer and the agitation hold.
   void renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out);
+  // Renders the orange/red ember crossfade (no green) for every eye.
+  void renderSmolderEmbers(uint32_t nowMs, uint16_t *out);
+  // Renders one eye's ember levels from the shared crossfade (no flicker step
+  // recompute by callers).
+  void emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange, uint16_t &red);
+  // Renders the asleep state: progressive eyelid closures plus half-open events.
+  void renderSmolderAsleep(uint32_t nowMs, uint16_t *out);
+  // Renders the green-only agitation animation agitationKind_.
+  void renderSmolderAgitated(uint32_t nowMs, uint16_t *out);
+  void enterAwake(uint32_t nowMs);
+  void enterAsleep(uint32_t nowMs);
+  void enterAgitated(uint32_t nowMs);
 
   // kModeStalker: scans one dim eye (in a random colour) around the rig; a
   // radar level ramps every eye to the stuttering bright red pop.
@@ -77,8 +108,20 @@ class LedEngine {
   uint32_t lastTickMs_;     // kModePulse only: previous tick() timestamp
   uint32_t pulsePeriodMs_;  // kModePulse only: period phaseMs_ is measured against
   uint32_t smolderStartMs_;  // kModeSmolder only: phase reference for the crossfade
-  uint32_t greenTriggerMs_;  // kModeSmolder only: start of the current green flash
-  bool prevRadarHigh_;       // kModeSmolder only: radar rising-edge detector
+  SmolderState smolderState_;    // kModeSmolder: current sleep/wake sub-state
+  uint32_t smolderStateStartMs_; // kModeSmolder: when smolderState_ was entered
+  uint32_t smolderSleepSeq_;     // kModeSmolder: sleep-episode counter (seeds maths)
+  uint32_t sleepHazardStartMs_;  // kModeSmolder awake: hazard clock origin
+  uint32_t sleepCheckMs_;        // kModeSmolder awake: next hazard roll time
+  uint32_t sleepWakeMs_;         // kModeSmolder asleep: absolute wake time
+  uint32_t sleepOpenStartMs_;    // kModeSmolder asleep: current half-open event start
+  uint32_t sleepNextOpenMs_;     // kModeSmolder asleep: next half-open event time
+  uint8_t sleepOpenMask_;        // kModeSmolder asleep: eyes in the current event
+  uint32_t sleepOpenSeq_;        // kModeSmolder asleep: half-open event counter
+  uint8_t agitationKind_;        // kModeSmolder agitated: current animation
+  uint32_t agitationSeq_;        // kModeSmolder: agitation counter (picks the kind)
+  uint32_t agitationStartMs_;    // kModeSmolder agitated: animation phase origin
+  uint32_t lastRadarHighMs_;     // kModeSmolder agitated: last radar-high tick
   uint32_t stalkerAlert_;       // kModeStalker: Q16 ramp toward the pop (0..1<<16)
   uint32_t stalkerLastTickMs_;  // kModeStalker: previous tick() timestamp
   uint32_t stalkerStartMs_;     // kModeStalker: scan phase reference

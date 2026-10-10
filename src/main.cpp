@@ -114,7 +114,7 @@ void setup() {
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
 
-  engine.setMode(ledfx::kModeSmolder, 0, millis());  // embers while idle, green flash on motion
+  engine.setMode(ledfx::kModeSmolder, 0, millis());  // embers, then sleep, green agitation on motion
 }
 
 void loop() {

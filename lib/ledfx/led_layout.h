@@ -90,13 +90,57 @@ constexpr uint32_t kSmolderFlickerStepMs = 47;  // flicker refresh interval
 constexpr uint16_t kSmolderEyePhasePermille[kEyeCount] = {
     0, 137, 271, 419, 563, 701, 839, 967};
 
-// Green motion flash: the greens snap on one eye after another, hold with ember
-// flicker, then fade out while orange and red resume.
+// --- kModeSmolder (mode 0) sleep/wake machine ---
+// Awake -> asleep: while the radar is quiet the chance to nod off rises from
+// kSmolderSleepAfterMs up to a forced onset at kSmolderSleepDeadlineMs, rolled
+// every kSmolderSleepCheckMs.
+constexpr uint32_t kSmolderSleepAfterMs = 30000;      // earliest sleep onset
+constexpr uint32_t kSmolderSleepDeadlineMs = 240000;  // forced onset by here
+constexpr uint32_t kSmolderSleepCheckMs = 5000;       // hazard roll interval
+
+// Asleep -> awake: a random nap length.
+constexpr uint32_t kSmolderSleepMinMs = 30000;
+constexpr uint32_t kSmolderSleepMaxMs = 180000;
+
+// Falling asleep: each eye's eyelid gesture starts at a random point in this
+// window after sleep onset, so the rig darkens eye by eye over 5..20 s.
+constexpr uint32_t kSleepFallMinMs = 5000;
+constexpr uint32_t kSleepFallMaxMs = 20000;
+
+// Occasional half-opens while asleep: gaps between events and group size.
+constexpr uint32_t kSleepOpenMinGapMs = 5000;
+constexpr uint32_t kSleepOpenMaxGapMs = 60000;
+constexpr uint16_t kSleepOpenGroupPermille = 350;  // chance an eye joins an event
+
+// The eyelid gesture: the eye's ember dims, flares a little, then goes out
+// ("can't quite keep the eyelid open").
+constexpr uint32_t kSleepGestureMs = 900;
+constexpr uint32_t kSleepDipEndMs = 250;
+constexpr uint32_t kSleepFlareEndMs = 550;
+constexpr uint16_t kSleepDipPermille = 400;
+constexpr uint16_t kSleepFlarePermille = 750;
+
+// --- kModeSmolder agitation (green only) ---
+// On motion the rig runs one of kAgitationKindCount green animations chosen at
+// random per episode; it stays until the radar has been quiet for
+// kAgitationHoldMs.
+constexpr uint32_t kAgitationHoldMs = 1500;
+constexpr uint16_t kAgitationFlickerPwm = 1200;   // shared flicker amplitude
+constexpr uint32_t kAgitationFlickerStepMs = 43;  // shared flicker refresh
+// Sweep: a bright eye bounces left<->right across the face (kEyes order 0..7)
+// with a trailing glow.
+constexpr uint32_t kAgitationSweepStepMs = 130;        // ms per eye of travel
+constexpr uint16_t kAgitationSweepTailPermille = 1500; // 1.5-eye trail
+// Dart: single eyes snap green for a step at a time, hopping unpredictably.
+constexpr uint32_t kAgitationDartStepMs = 90;
+// Ripple: the original eye-by-eye green spread, looping without a gap.
 constexpr uint32_t kGreenSpreadMs = 120;    // stagger between consecutive eyes
 constexpr uint32_t kGreenAttackMs = 40;     // snap-on ramp, effectively instant
 constexpr uint32_t kGreenHoldMs = 3000;     // full-brightness hold
-constexpr uint32_t kGreenFadeMs = 800;      // fade back into the embers
-constexpr uint16_t kGreenFlickerPwm = 1200;  // ember noise at full brightness
+constexpr uint32_t kGreenFadeMs = 800;      // fade back out
+constexpr uint16_t kGreenFlickerPwm = 1200; // ember noise at full brightness
+constexpr uint32_t kAgitationRippleLapMs =
+    (kEyeCount - 1) * kGreenSpreadMs + kGreenAttackMs + kGreenHoldMs + kGreenFadeMs;
 
 // --- kModeStalker (mode 3) tuning ---
 // One dim eye at a time scans around the rig; each scanning eye lights a single

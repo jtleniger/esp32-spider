@@ -10,6 +10,23 @@ static_assert(kPulseHalfSlowMs != 0 && kPulseHalfFastMs != 0 && kPulseLevels != 
 static_assert(kSmolderFadeMs != 0 && kSmolderLevels != 0 &&
                   kSmolderFlickerStepMs != 0,
               "kModeSmolder needs nonzero tuning");
+static_assert(kSmolderSleepAfterMs < kSmolderSleepDeadlineMs &&
+                  kSmolderSleepCheckMs != 0 &&
+                  kSmolderSleepMinMs < kSmolderSleepMaxMs &&
+                  kSleepFallMinMs < kSleepFallMaxMs &&
+                  kSleepOpenMinGapMs < kSleepOpenMaxGapMs &&
+                  kSleepDipEndMs < kSleepFlareEndMs &&
+                  kSleepFlareEndMs < kSleepGestureMs &&
+                  kSleepDipPermille < kSleepFlarePermille &&
+                  kSleepFlarePermille < 1000,
+              "kModeSmolder sleep machine needs consistent tuning");
+static_assert(kAgitationSweepStepMs != 0 && kAgitationDartStepMs != 0 &&
+                  kAgitationFlickerPwm < kMaxPwm &&
+                  kAgitationSweepTailPermille != 0 &&
+                  kAgitationSweepTailPermille <= (kEyeCount - 1) * 1000 &&
+                  kAgitationRippleLapMs != 0 &&
+                  kAgitationKindCount == 3,
+              "kModeSmolder agitation needs consistent tuning");
 static_assert(kEyeCount * kLedsPerEye == kChannelCount,
               "every channel must belong to exactly one eye LED");
 static_assert(kStalkerPopMs != 0 && kStalkerReleaseMs != 0 &&
@@ -38,9 +55,6 @@ static_assert(kHypnoSlowStepMs > kHypnoFastStepMs && kHypnoFastStepMs != 0 &&
                   kHypnoHeadPwm > kHypnoFlickerPwm &&
                   kHypnoSurgePermille < 1000,
               "kModeHypnotic needs consistent tuning");
-
-// Sentinel for "no green flash has been triggered yet".
-constexpr uint32_t kNoGreenTrigger = 0xFFFFFFFFu;
 
 uint16_t saturatePwm(int32_t value) {
   if (value < 0) {
@@ -192,6 +206,30 @@ uint16_t greenEnvelopePermille(uint32_t elapsedMs) {
   return 0;
 }
 
+// Eyelid-gesture envelope over kSleepGestureMs, in permille of the eye's ember
+// brightness: starts open, dips to a slit, flares a little, then goes out.
+uint16_t sleepGesturePermille(uint32_t elapsedMs) {
+  if (elapsedMs < kSleepDipEndMs) {
+    return static_cast<uint16_t>(
+        1000 - static_cast<uint64_t>(elapsedMs) * (1000 - kSleepDipPermille) /
+                   kSleepDipEndMs);
+  }
+  if (elapsedMs < kSleepFlareEndMs) {
+    return static_cast<uint16_t>(
+        kSleepDipPermille +
+        static_cast<uint64_t>(elapsedMs - kSleepDipEndMs) *
+            (kSleepFlarePermille - kSleepDipPermille) /
+            (kSleepFlareEndMs - kSleepDipEndMs));
+  }
+  if (elapsedMs < kSleepGestureMs) {
+    return static_cast<uint16_t>(
+        kSleepFlarePermille -
+        static_cast<uint64_t>(elapsedMs - kSleepFlareEndMs) *
+            kSleepFlarePermille / (kSleepGestureMs - kSleepFlareEndMs));
+  }
+  return 0;
+}
+
 // One triangular thump starting at `startMs` inside the beat, scaled by
 // `gainPermille` (0..1000). Zero outside its kHeartbeatThumpMs window.
 uint16_t thumpPermille(uint32_t phaseMs, uint32_t startMs, uint16_t gainPermille) {
@@ -229,8 +267,20 @@ LedEngine::LedEngine()
       lastTickMs_(0),
       pulsePeriodMs_(2 * kPulseHalfSlowMs),
       smolderStartMs_(0),
-      greenTriggerMs_(kNoGreenTrigger),
-      prevRadarHigh_(false),
+      smolderState_(kSmolderAwake),
+      smolderStateStartMs_(0),
+      smolderSleepSeq_(0),
+      sleepHazardStartMs_(0),
+      sleepCheckMs_(0),
+      sleepWakeMs_(0),
+      sleepOpenStartMs_(0),
+      sleepNextOpenMs_(0),
+      sleepOpenMask_(0),
+      sleepOpenSeq_(0),
+      agitationKind_(0),
+      agitationSeq_(0),
+      agitationStartMs_(0),
+      lastRadarHighMs_(0),
       stalkerAlert_(0),
       stalkerLastTickMs_(0),
       stalkerStartMs_(0),
@@ -266,8 +316,20 @@ bool LedEngine::setMode(uint16_t mode, uint16_t channel, uint32_t nowMs) {
   phaseMs_ = 0;
   lastTickMs_ = nowMs;
   smolderStartMs_ = nowMs;
-  greenTriggerMs_ = kNoGreenTrigger;
-  prevRadarHigh_ = false;
+  smolderState_ = kSmolderAwake;
+  smolderStateStartMs_ = nowMs;
+  smolderSleepSeq_ = 0;
+  sleepHazardStartMs_ = nowMs;
+  sleepCheckMs_ = nowMs + kSmolderSleepAfterMs;
+  sleepWakeMs_ = 0;
+  sleepOpenStartMs_ = 0;
+  sleepNextOpenMs_ = 0;
+  sleepOpenMask_ = 0;
+  sleepOpenSeq_ = 0;
+  agitationKind_ = 0;
+  agitationSeq_ = 0;
+  agitationStartMs_ = nowMs;
+  lastRadarHighMs_ = nowMs;
   stalkerAlert_ = 0;
   stalkerLastTickMs_ = nowMs;
   stalkerStartMs_ = nowMs;
@@ -363,56 +425,236 @@ void LedEngine::renderPulse(uint32_t nowMs, bool radarHigh, uint16_t *out) {
 }
 
 void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
-  // Motion is a one-shot trigger on the radar's rising edge; the flash then runs
-  // to completion even if the pin drops again.
-  if (radarHigh && !prevRadarHigh_) {
-    greenTriggerMs_ = nowMs;
+  // Motion always pulls the rig into agitation, from awake or asleep.
+  if (radarHigh && smolderState_ != kSmolderAgitated) {
+    enterAgitated(nowMs);
+    renderSmolderAgitated(nowMs, out);
+    return;
   }
-  prevRadarHigh_ = radarHigh;
 
+  switch (smolderState_) {
+    case kSmolderAgitated:
+      if (radarHigh) {
+        lastRadarHighMs_ = nowMs;  // hold is anchored to the last motion
+      } else if (nowMs - lastRadarHighMs_ >= kAgitationHoldMs) {
+        enterAwake(nowMs);
+        renderSmolderEmbers(nowMs, out);
+        return;
+      }
+      renderSmolderAgitated(nowMs, out);
+      return;
+
+    case kSmolderAsleep:
+      if (nowMs >= sleepWakeMs_) {
+        enterAwake(nowMs);
+        renderSmolderEmbers(nowMs, out);
+        return;
+      }
+      renderSmolderAsleep(nowMs, out);
+      return;
+
+    default:  // kSmolderAwake
+      {
+        const uint32_t elapsed = nowMs - sleepHazardStartMs_;  // wrap intentional
+        if (elapsed >= kSmolderSleepDeadlineMs) {
+          enterAsleep(nowMs);
+          renderSmolderAsleep(nowMs, out);
+          return;
+        }
+        if (nowMs >= sleepCheckMs_) {
+          if (elapsed >= kSmolderSleepAfterMs) {
+            const uint16_t chance = static_cast<uint16_t>(
+                static_cast<uint64_t>(elapsed - kSmolderSleepAfterMs) * 1000 /
+                (kSmolderSleepDeadlineMs - kSmolderSleepAfterMs));
+            if (hashRange(sleepHazardStartMs_ * 2654435761u + nowMs, 1000) <
+                chance) {
+              enterAsleep(nowMs);
+              renderSmolderAsleep(nowMs, out);
+              return;
+            }
+          }
+          sleepCheckMs_ = nowMs + kSmolderSleepCheckMs;
+        }
+      }
+      renderSmolderEmbers(nowMs, out);
+      return;
+  }
+}
+
+void LedEngine::enterAwake(uint32_t nowMs) {
+  smolderState_ = kSmolderAwake;
+  smolderStateStartMs_ = nowMs;
+  sleepHazardStartMs_ = nowMs;
+  sleepCheckMs_ = nowMs + kSmolderSleepAfterMs;
+}
+
+void LedEngine::enterAsleep(uint32_t nowMs) {
+  smolderState_ = kSmolderAsleep;
+  smolderStateStartMs_ = nowMs;
+  ++smolderSleepSeq_;
+  const uint32_t seed = smolderSleepSeq_ * 2654435761u + 0x9Eu;
+  sleepWakeMs_ = nowMs + kSmolderSleepMinMs +
+                 hashRange(seed, kSmolderSleepMaxMs - kSmolderSleepMinMs);
+  sleepOpenStartMs_ = 0;
+  sleepOpenMask_ = 0;
+  sleepNextOpenMs_ =
+      nowMs + kSleepOpenMinGapMs +
+      hashRange(seed + 0x11u, kSleepOpenMaxGapMs - kSleepOpenMinGapMs);
+}
+
+void LedEngine::enterAgitated(uint32_t nowMs) {
+  smolderState_ = kSmolderAgitated;
+  smolderStateStartMs_ = nowMs;
+  agitationKind_ = static_cast<uint8_t>(
+      hashRange(agitationSeq_ * 2654435761u + 0x6Bu, kAgitationKindCount));
+  ++agitationSeq_;
+  agitationStartMs_ = nowMs;
+  lastRadarHighMs_ = nowMs;
+}
+
+void LedEngine::emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange,
+                            uint16_t &red) {
+  const EyeWiring &wiring = kEyes[eye];
   const uint32_t flickerStep = nowMs / kSmolderFlickerStepMs;
-  const uint32_t cycleMs = nowMs - smolderStartMs_;  // wraparound is intentional
-  constexpr uint32_t kGreenTotalMs = kGreenAttackMs + kGreenHoldMs + kGreenFadeMs;
+  const uint32_t offsetMs =
+      static_cast<uint32_t>(kSmolderEyePhasePermille[eye]) * kSmolderPeriodMs /
+      1000;
+  const uint16_t breath = breathePermille(
+      (nowMs - smolderStartMs_) % kSmolderPeriodMs + offsetMs);
+  orange = saturatePwm(withFlicker(
+      scalePermille(kMaxPwm, breath), wiring.orange, flickerStep,
+      kSmolderFlickerPwm));
+  red = saturatePwm(withFlicker(scalePermille(kMaxPwm, 1000 - breath),
+                                wiring.red, flickerStep, kSmolderFlickerPwm));
+}
 
+void LedEngine::renderSmolderEmbers(uint32_t nowMs, uint16_t *out) {
   for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    const EyeWiring &wiring = kEyes[eye];
+    uint16_t orange = 0;
+    uint16_t red = 0;
+    emberLevels(eye, nowMs, orange, red);
+    out[kEyes[eye].orange] = orange;
+    out[kEyes[eye].red] = red;
+  }
+}
 
-    const uint32_t offsetMs =
-        static_cast<uint32_t>(kSmolderEyePhasePermille[eye]) * kSmolderPeriodMs /
-        1000;
-    const uint16_t breath =
-        breathePermille((cycleMs % kSmolderPeriodMs) + offsetMs);
-
-    const int32_t orangeBase = static_cast<int32_t>(kMaxPwm) * breath / 1000;
-    const int32_t redBase =
-        static_cast<int32_t>(kMaxPwm) * (1000 - breath) / 1000;
-
-    uint16_t green = 0;
-    uint16_t litPermille = 1000;  // scales O/R down while the green flash fades
-    if (greenTriggerMs_ != kNoGreenTrigger) {
-      const uint32_t eyeStart =
-          greenTriggerMs_ + static_cast<uint32_t>(eye) * kGreenSpreadMs;
-      // Eyes that have not started yet wrap to a huge elapsed value and are
-      // skipped, which is exactly the spread.
-      const uint32_t elapsed = nowMs - eyeStart;
-      if (elapsed < kGreenTotalMs) {
-        const uint16_t envelope = greenEnvelopePermille(elapsed);
-        litPermille = static_cast<uint16_t>(1000 - envelope);
-        green = saturatePwm(withFlicker(scalePermille(kMaxPwm, envelope),
-                                        wiring.green, flickerStep,
-                                        kGreenFlickerPwm));
+void LedEngine::renderSmolderAsleep(uint32_t nowMs, uint16_t *out) {
+  // Advance the occasional random half-open: one event at a time.
+  if (sleepOpenMask_ != 0 && nowMs - sleepOpenStartMs_ >= kSleepGestureMs) {
+    sleepOpenMask_ = 0;
+  }
+  if (sleepOpenMask_ == 0 && nowMs >= sleepNextOpenMs_) {
+    const uint32_t seed = sleepOpenSeq_ * 2654435761u + 0x33u;
+    uint8_t mask = 0;
+    for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+      if (hashRange(seed + eye * 40503u, 1000) < kSleepOpenGroupPermille) {
+        mask |= static_cast<uint8_t>(1u << eye);
       }
     }
+    if (mask == 0) {  // never a fully dark half-open
+      mask = static_cast<uint8_t>(
+          1u << hashRange(seed + 0xA5u, kEyeCount));
+    }
+    sleepOpenStartMs_ = nowMs;
+    sleepOpenMask_ = mask;
+    ++sleepOpenSeq_;
+    sleepNextOpenMs_ =
+        nowMs + kSleepOpenMinGapMs +
+        hashRange(seed + 0x77u, kSleepOpenMaxGapMs - kSleepOpenMinGapMs);
+  }
 
-    // Flicker scales with each channel's current brightness, so the dim colour
-    // barely wavers while the bright one keeps a visible flicker.
-    out[wiring.orange] = saturatePwm(withFlicker(
-        scalePermille(orangeBase, litPermille), wiring.orange, flickerStep,
-        kSmolderFlickerPwm));
-    out[wiring.red] = saturatePwm(withFlicker(scalePermille(redBase, litPermille),
-                                              wiring.red, flickerStep,
-                                              kSmolderFlickerPwm));
-    out[wiring.green] = green;
+  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+    // Falling asleep: this eye's eyelid closes at a random point in the spread.
+    const uint32_t closeStart =
+        smolderStateStartMs_ + kSleepFallMinMs +
+        hashRange(smolderSleepSeq_ * 2654435761u + eye * 40503u + 0x51u,
+                  kSleepFallMaxMs - kSleepFallMinMs);
+    uint32_t elapsed = 0;
+    bool gesturing = false;
+    if (nowMs >= closeStart && nowMs - closeStart < kSleepGestureMs) {
+      elapsed = nowMs - closeStart;
+      gesturing = true;
+    } else if (((sleepOpenMask_ >> eye) & 1u) != 0 &&
+               nowMs - sleepOpenStartMs_ < kSleepGestureMs) {
+      elapsed = nowMs - sleepOpenStartMs_;
+      gesturing = true;
+    }
+    uint16_t orange = 0;
+    uint16_t red = 0;
+    if (!gesturing) {
+      if (nowMs < closeStart) {  // not yet shut: full embers
+        emberLevels(eye, nowMs, orange, red);
+        out[kEyes[eye].orange] = orange;
+        out[kEyes[eye].red] = red;
+      }
+      continue;  // after its close: dark
+    }
+    const uint16_t env = sleepGesturePermille(elapsed);
+    emberLevels(eye, nowMs, orange, red);
+    out[kEyes[eye].orange] = saturatePwm(scalePermille(orange, env));
+    out[kEyes[eye].red] = saturatePwm(scalePermille(red, env));
+  }
+}
+
+void LedEngine::renderSmolderAgitated(uint32_t nowMs, uint16_t *out) {
+  const uint32_t flickerStep = nowMs / kAgitationFlickerStepMs;
+
+  if (agitationKind_ == kAgitationSweep) {
+    // A bright eye bounces left<->right across the face, with a trailing glow.
+    const uint32_t periodMs = 2u * (kEyeCount - 1) * kAgitationSweepStepMs;
+    const uint32_t t = (nowMs - agitationStartMs_) % periodMs;
+    const uint32_t tri = (t < periodMs / 2) ? t : (periodMs - t);
+    const uint32_t pos = tri * 1000u / kAgitationSweepStepMs;  // eye-permille
+    for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+      const uint32_t eyePos = static_cast<uint32_t>(eye) * 1000u;
+      const uint32_t dist = pos > eyePos ? pos - eyePos : eyePos - pos;
+      if (dist >= kAgitationSweepTailPermille) {
+        continue;
+      }
+      const uint16_t intensity = static_cast<uint16_t>(
+          (kAgitationSweepTailPermille - dist) * 1000 /
+          kAgitationSweepTailPermille);
+      const uint8_t channel = kEyes[eye].green;
+      out[channel] = saturatePwm(withFlicker(scalePermille(kMaxPwm, intensity),
+                                             channel, flickerStep,
+                                             kAgitationFlickerPwm));
+    }
+    return;
+  }
+
+  if (agitationKind_ == kAgitationDart) {
+    // One or two eyes snap green per step, hopping unpredictably.
+    const uint32_t step = (nowMs - agitationStartMs_) / kAgitationDartStepMs;
+    const uint32_t seed = agitationStartMs_ * 2654435761u + step * 40503u + 0x1Du;
+    uint8_t mask = static_cast<uint8_t>(1u << hashRange(seed, kEyeCount));
+    if (hashRange(seed + 0x2Bu, 2) != 0) {
+      mask |= static_cast<uint8_t>(1u << hashRange(seed + 0x5Du, kEyeCount));
+    }
+    for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+      if (((mask >> eye) & 1u) == 0) {
+        continue;
+      }
+      const uint8_t channel = kEyes[eye].green;
+      out[channel] = saturatePwm(withFlicker(kMaxPwm, channel, flickerStep,
+                                             kAgitationFlickerPwm));
+    }
+    return;
+  }
+
+  // kAgitationRipple: the original eye-by-eye green spread, looping.
+  constexpr uint32_t kRippleTotalMs =
+      kGreenAttackMs + kGreenHoldMs + kGreenFadeMs;
+  const uint32_t phase = (nowMs - agitationStartMs_) % kAgitationRippleLapMs;
+  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+    const uint32_t elapsed =
+        phase - static_cast<uint32_t>(eye) * kGreenSpreadMs;  // huge => skip
+    if (elapsed >= kRippleTotalMs) {
+      continue;
+    }
+    const uint8_t channel = kEyes[eye].green;
+    out[channel] = saturatePwm(withFlicker(
+        scalePermille(kMaxPwm, greenEnvelopePermille(elapsed)), channel,
+        flickerStep, kGreenFlickerPwm));
   }
 }
 

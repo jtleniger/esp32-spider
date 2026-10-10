@@ -8,8 +8,12 @@ namespace ledfx {
 
 // Integer enumeration accepted by POST /mode?m=<value>.
 enum Mode : uint16_t {
-  // Smolder: every eye runs a slow orange/red crossfade with an ember flicker
-  // and its own phase offset. Motion makes the greens flash across the eyes.
+  // Smolder: a sleep/wake machine. Awake runs a slow orange/red ember crossfade
+  // with a flicker and a per-eye phase offset; left undisturbed it grows
+  // drowsy, then each eye's ember sinks and goes out (and occasionally
+  // half-opens again) until it wakes on its own. Motion pulls the rig into a
+  // green-only agitation picked at random from a looping spread, a sweeping
+  // beam or darting eyes, and it stays until the radar has been quiet briefly.
   kModeSmolder = 0,
   // Lights exactly the channel named by ?c=<channel> at full brightness and
   // holds it there; every other channel stays off. Ignores the radar. Used to

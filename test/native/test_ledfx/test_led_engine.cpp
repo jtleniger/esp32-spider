@@ -50,6 +50,33 @@ uint16_t greenLevel(const ledfx::LedEngine &e, uint8_t eye) {
 constexpr uint16_t kOneStepLevel =
     static_cast<uint16_t>(ledfx::kMaxPwm / ledfx::kPulseLevels);
 
+// Any channel at all above zero (the frame is not dark).
+bool anyLit(const ledfx::LedEngine &e) {
+  for (uint16_t c = 0; c < ledfx::kChannelCount; ++c) {
+    if (e.frame()[c] > 0) return true;
+  }
+  return false;
+}
+
+// Any green LED above zero (the agitation-only colour).
+bool anyGreenLit(const ledfx::LedEngine &e) {
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    if (greenLevel(e, eye) > 0) return true;
+  }
+  return false;
+}
+
+// Any orange or red LED above zero (the ember colours).
+bool anyWarmLit(const ledfx::LedEngine &e) {
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    if (channelLevel(e, ledfx::kEyes[eye].orange) > 0 ||
+        channelLevel(e, ledfx::kEyes[eye].red) > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Level renderPulse() emits `up` ms into a half cycle of `halfMs`.
 uint16_t pulseLevel(uint32_t up, uint32_t halfMs) {
   return static_cast<uint16_t>((up * ledfx::kPulseLevels / halfMs) *
@@ -456,75 +483,194 @@ static void testSmolderEyesAreNotInLockstep() {
   TEST_ASSERT_TRUE(sawDifferent);
 }
 
-// A radar rising edge starts the greens: eye 0 snaps on within the attack, the
-// rest follow one at a time (kGreenSpreadMs apart).
-static void testSmolderGreenSpreadsEyeByEye() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSmolder, 0, 0));
-  engine.tick(0, false);
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    TEST_ASSERT_EQUAL_UINT16(0, greenLevel(engine, eye));
-  }
-
-  engine.tick(1000, true);  // rising edge: flash starts now
-  TEST_ASSERT_EQUAL_UINT16(0, greenLevel(engine, 0));  // attack has not elapsed
-
-  engine.tick(1000 + ledfx::kGreenAttackMs, true);
-  TEST_ASSERT_TRUE(greenLevel(engine, 0) >=
-                   ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
-  for (uint8_t eye = 1; eye < ledfx::kEyeCount; ++eye) {
-    TEST_ASSERT_EQUAL_UINT16(0, greenLevel(engine, eye));  // not started yet
-  }
-
-  engine.tick(1000 + ledfx::kGreenSpreadMs + ledfx::kGreenAttackMs, true);
-  TEST_ASSERT_TRUE(greenLevel(engine, 0) >=
-                   ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
-  TEST_ASSERT_TRUE(greenLevel(engine, 1) >=
-                   ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
-  TEST_ASSERT_EQUAL_UINT16(0, greenLevel(engine, 2));  // still waiting
+// Nothing nods off inside the first kSmolderSleepAfterMs: the engine stays awake
+// and warm, with no green anywhere.
+static void testSmolderStaysAwakeBeforeSleepWindow() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  e.tick(0, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  e.tick(ledfx::kSmolderSleepAfterMs - 1, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  TEST_ASSERT_TRUE(anyLit(e));
+  TEST_ASSERT_FALSE(anyGreenLit(e));
 }
 
-// Each eye fades out after attack + hold + fade and hands back to the embers.
-static void testSmolderGreenFadesAndEmbersResume() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSmolder, 0, 0));
-  engine.tick(0, false);
-  engine.tick(1000, true);
-
-  const uint32_t eye0Total =
-      ledfx::kGreenAttackMs + ledfx::kGreenHoldMs + ledfx::kGreenFadeMs;
-  engine.tick(1000 + eye0Total, true);
-  TEST_ASSERT_EQUAL_UINT16(0, greenLevel(engine, 0));
-  TEST_ASSERT_TRUE(channelLevel(engine, ledfx::kEyes[0].orange) > 0 ||
-                   channelLevel(engine, ledfx::kEyes[0].red) > 0);
-
-  // The last eye starts kGreenSpreadMs * (kEyeCount-1) later, so it is still
-  // lit while eye 0 has already handed back.
-  const uint32_t lastEyeStart =
-      1000 + static_cast<uint32_t>(ledfx::kEyeCount - 1) * ledfx::kGreenSpreadMs;
-  engine.tick(lastEyeStart + ledfx::kGreenAttackMs, true);
-  TEST_ASSERT_TRUE(greenLevel(engine, ledfx::kEyeCount - 1) >=
-                   ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
-
-  // Once every eye is done the greens are all dark again.
-  const uint32_t allDone = lastEyeStart + eye0Total;
-  engine.tick(allDone, true);
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    TEST_ASSERT_EQUAL_UINT16(0, greenLevel(engine, eye));
+// Undisturbed, the rig does fall asleep by the deadline, and once every eyelid
+// gesture has run the frame is fully dark.
+static void testSmolderFallsAsleepWhenUndisturbed() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  for (uint32_t t = 0; t <= ledfx::kSmolderSleepDeadlineMs; t += 250) {
+    e.tick(t, false);
   }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, e.smolderState());
+
+  const uint32_t dark =
+      ledfx::kSmolderSleepDeadlineMs + ledfx::kSleepFallMaxMs +
+      ledfx::kSleepGestureMs;
+  for (uint32_t t = ledfx::kSmolderSleepDeadlineMs + 250; t <= dark; t += 250) {
+    e.tick(t, false);
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, e.smolderState());
+  TEST_ASSERT_FALSE(anyLit(e));
 }
 
-// Re-issuing the mode drops any in-flight flash and parks the frame.
-static void testSmolderRestartResetsGreen() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSmolder, 0, 0));
-  engine.tick(1000, true);
-  engine.tick(1000 + ledfx::kGreenAttackMs, true);
-  TEST_ASSERT_TRUE(greenLevel(engine, 0) > 0);
-
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSmolder, 0, 1000));
-  assertAllOff(engine);
-  engine.tick(1000, false);  // fresh trigger state, still no motion
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    TEST_ASSERT_EQUAL_UINT16(0, greenLevel(engine, eye));
+// A nap lasts a random kSmolderSleepMinMs..kSmolderSleepMaxMs and then the
+// embers come back.
+static void testSmolderNapsWithinBoundsThenWakes() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  uint32_t tOnset = 0;
+  uint32_t tWake = 0;
+  bool asleep = false;
+  for (uint32_t t = 0;
+       t <= ledfx::kSmolderSleepDeadlineMs + ledfx::kSmolderSleepMaxMs + 250;
+       t += 250) {
+    e.tick(t, false);
+    if (!asleep && e.smolderState() == ledfx::kSmolderAsleep) {
+      asleep = true;
+      tOnset = t;
+    } else if (asleep && e.smolderState() == ledfx::kSmolderAwake) {
+      tWake = t;
+      break;
+    }
   }
+  TEST_ASSERT_TRUE(asleep);
+  TEST_ASSERT_TRUE(tWake > tOnset);
+  const uint32_t nap = tWake - tOnset;
+  TEST_ASSERT_TRUE(nap >= ledfx::kSmolderSleepMinMs - 250);
+  TEST_ASSERT_TRUE(nap <= ledfx::kSmolderSleepMaxMs + 250);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  TEST_ASSERT_TRUE(anyLit(e));
+  TEST_ASSERT_FALSE(anyGreenLit(e));
+}
+
+// While asleep the embers still surface: after the eyelid gestures have run the
+// rig is dark, then every so often a group of eyes half-opens (warm, never
+// green) and shuts again.
+static void testSmolderHalfOpensEyesWhileAsleep() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  bool sawHalfOpen = false;
+  bool sawDarkAgain = false;
+  uint32_t onset = 0;
+  uint8_t previous = ledfx::kSmolderAwake;
+  for (uint32_t t = 0; t <= 1200000; t += 250) {
+    e.tick(t, false);
+    const uint8_t state = e.smolderState();
+    if (state == ledfx::kSmolderAsleep && previous != ledfx::kSmolderAsleep) {
+      onset = t;
+    }
+    previous = state;
+    // Past the fall spread every wake-up inside a nap is a half-open event.
+    if (state == ledfx::kSmolderAsleep &&
+        t >= onset + ledfx::kSleepFallMaxMs + ledfx::kSleepGestureMs) {
+      if (anyLit(e)) {
+        TEST_ASSERT_TRUE(anyWarmLit(e));
+        TEST_ASSERT_FALSE(anyGreenLit(e));
+        sawHalfOpen = true;
+      } else if (sawHalfOpen) {
+        sawDarkAgain = true;
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(sawHalfOpen);
+  TEST_ASSERT_TRUE(sawDarkAgain);
+}
+
+// Motion during a nap wakes the rig straight into agitation.
+static void testSmolderMotionWhileAsleepAgitates() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  uint32_t t = 0;
+  for (; t <= ledfx::kSmolderSleepDeadlineMs; t += 250) {
+    e.tick(t, false);
+    if (e.smolderState() == ledfx::kSmolderAsleep) {
+      break;
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, e.smolderState());
+
+  e.tick(t + 250, true);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+  TEST_ASSERT_TRUE(anyGreenLit(e));
+  TEST_ASSERT_FALSE(anyWarmLit(e));
+}
+
+// Agitation is green-only and moving: warm channels never light, and the greens
+// keep changing which eyes are on.
+static void testSmolderAgitationIsGreenOnlyAndAlive() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  e.tick(0, false);
+  bool litEyes[ledfx::kEyeCount] = {};
+  uint32_t last = 0;
+  for (uint32_t t = 20; t <= 900; t += 20) {
+    e.tick(t, true);
+    last = t;
+    TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+    TEST_ASSERT_FALSE(anyWarmLit(e));
+    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+      if (greenLevel(e, eye) > 0) {
+        litEyes[eye] = true;
+      }
+    }
+  }
+  uint8_t distinct = 0;
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    if (litEyes[eye]) ++distinct;
+  }
+  TEST_ASSERT_TRUE(distinct >= 2);
+  TEST_ASSERT_TRUE(anyGreenLit(e));
+
+  e.tick(last + ledfx::kAgitationHoldMs + 100, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+}
+
+// The hold keeps the animation up until the radar has been quiet that long.
+static void testSmolderAgitationEndsAfterMotionStops() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  e.tick(0, false);
+  uint32_t last = 0;
+  for (uint32_t t = 100; t <= 300; t += 100) {
+    e.tick(t, true);
+    last = t;
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+
+  e.tick(last + ledfx::kAgitationHoldMs - 1, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+
+  e.tick(last + ledfx::kAgitationHoldMs, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  TEST_ASSERT_TRUE(anyWarmLit(e));
+  TEST_ASSERT_FALSE(anyGreenLit(e));
+}
+
+// Repeated episodes do not always pick the same animation.
+static void testSmolderAgitationKindsVary() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  bool seen[ledfx::kAgitationKindCount] = {};
+  uint32_t t = 100000;
+  for (int episode = 0; episode < 40; ++episode) {
+    e.tick(t, true);
+    const uint8_t kind = e.agitationKind();
+    TEST_ASSERT_TRUE(kind < ledfx::kAgitationKindCount);
+    seen[kind] = true;
+    while (e.smolderState() == ledfx::kSmolderAgitated) {
+      t += 250;
+      e.tick(t, false);
+    }
+    t += 1000;
+  }
+  uint8_t distinct = 0;
+  for (uint8_t kind = 0; kind < ledfx::kAgitationKindCount; ++kind) {
+    if (seen[kind]) ++distinct;
+  }
+  TEST_ASSERT_TRUE(distinct >= 2);
 }
 
 // --- kModeStalker cases ---
@@ -916,9 +1062,14 @@ int main(void) {
   RUN_TEST(testSmolderIdleLeavesGreenOff);
   RUN_TEST(testSmolderHoldsAreSingleColourAndFlicker);
   RUN_TEST(testSmolderEyesAreNotInLockstep);
-  RUN_TEST(testSmolderGreenSpreadsEyeByEye);
-  RUN_TEST(testSmolderGreenFadesAndEmbersResume);
-  RUN_TEST(testSmolderRestartResetsGreen);
+  RUN_TEST(testSmolderStaysAwakeBeforeSleepWindow);
+  RUN_TEST(testSmolderFallsAsleepWhenUndisturbed);
+  RUN_TEST(testSmolderNapsWithinBoundsThenWakes);
+  RUN_TEST(testSmolderHalfOpensEyesWhileAsleep);
+  RUN_TEST(testSmolderMotionWhileAsleepAgitates);
+  RUN_TEST(testSmolderAgitationIsGreenOnlyAndAlive);
+  RUN_TEST(testSmolderAgitationEndsAfterMotionStops);
+  RUN_TEST(testSmolderAgitationKindsVary);
   RUN_TEST(testStalkerScansDimThenPopsRed);
   RUN_TEST(testStalkerReleaseReturnsToScan);
   RUN_TEST(testStalkerColourRandomisesPerEye);
