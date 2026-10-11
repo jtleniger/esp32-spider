@@ -14,7 +14,7 @@ pio run -e esp32dev  # compile (first run downloads ~1 GB)
 
 ## Layout
 
-`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels; `health.h` builds the `GET /health` body (`{"mode":M,"uptime_s":U,"utc":"...","clock_set":B,"log_files":N,"free_bytes":F}`, JSON because the endpoint keeps gaining fields); `tuning.h` is the knob table behind `POST /config`; `clock.h` formats the UTC stamps the status document reports; `logs.h` formats the motion-log names, activation lines, listing and validates a requested log name. `src/main.cpp` is ESP32-only glue (WiFi, mDNS, `WebServer`, LittleFS, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring; git-ignored `include/secrets.h` holds WiFi credentials.
+`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels; `health.h` builds the `GET /health` body (`{"mode":M,"uptime_s":U,"utc":"...","clock_set":B,"log_files":N,"free_bytes":F}`, JSON because the endpoint keeps gaining fields); `tuning.h` is the knob table behind `POST /config`; `clock.h` formats the UTC stamps the status document reports; `logs.h` formats the motion-log names, activation lines, listing and validates a requested log name. `src/main.cpp` is ESP32-only glue (WiFi, mDNS, `WebServer`, LittleFS, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring and `API.md` documents the HTTP surface; git-ignored `include/secrets.h` holds WiFi credentials.
 
 ## Why the code is shaped this way
 
