@@ -25,6 +25,16 @@ constexpr uint32_t kWifiRetryIntervalMs = 5000;
 // whatever address the AP hands out.
 constexpr const char *kMdnsHostname = "spider";
 
+// NTP: the rig has no RTC, so the clock comes from the network. lwIP's SNTP
+// client retries with backoff (15 s, doubling to 150 s) while it cannot reach a
+// server and re-polls hourly after a sync, so starting it at boot covers the
+// usual power cycle where the AP is not up yet - maintainWifi() needs no clock
+// retry. UTC by default; put the local offset here if log stamps should be
+// local rather than unambiguous.
+constexpr const char *kNtpServer = "pool.ntp.org";
+constexpr long kNtpGmtOffsetSec = 0;
+constexpr int kNtpDaylightOffsetSec = 0;
+
 // Persisted tuning overrides (POST /config). One blob under one key: the field
 // table in tuning.h is a struct layout, so the version is bumped whenever the
 // layout or a default changes and a blob from an older build is discarded
@@ -52,18 +62,31 @@ void pushFrame() {
 // HLK-LD1020: driven high while motion is detected.
 bool radarActive() { return digitalRead(ledfx::kRadarPin) == HIGH; }
 
+// Seconds since the Unix epoch, or 0 before SNTP has set the clock (the system
+// clock reads 1970 until then, and clockIsSet() in lib/ledfx is what decides
+// whether that counts as real time).
+uint32_t epochSeconds() {
+  const time_t now = time(nullptr);
+  return now > 0 ? static_cast<uint32_t>(now) : 0;
+}
+
 // Status document for monitoring: the mode number currently running (the same
-// value POST /mode takes) and whole seconds since boot. JSON, because this
-// endpoint accumulates fields (log counts, free space) and a parser should not
-// have to care which ones are present. The body builder lives in lib/ledfx so
-// the host suite can assert it; only the millis() uptime source is Arduino-side.
+// value POST /mode takes), whole seconds since boot, and the clock. JSON,
+// because this endpoint accumulates fields (log counts, free space) and a parser
+// should not have to care which ones are present. The body builder lives in
+// lib/ledfx so the host suite can assert it; only the millis()/time() sources
+// are Arduino-side.
 void handleHealth() {
   if (WiFi.status() != WL_CONNECTED) {
     server.send(503, "text/plain", "");
     return;
   }
+  ledfx::HealthStatus status = {};
+  status.mode = engine.mode();
+  status.uptimeMs = millis();
+  status.epochSeconds = epochSeconds();
   char body[ledfx::kHealthBodyCapacity];
-  ledfx::formatHealth(body, sizeof(body), engine.mode(), millis());
+  ledfx::formatHealth(body, sizeof(body), status);
   server.send(200, "application/json", body);
 }
 
@@ -216,6 +239,19 @@ void beginMdns() {
   Serial.printf("mDNS: http://%s.local/\n", kMdnsHostname);
 }
 
+// Starts the SNTP client. Not gated on the link: configTime() only installs the
+// server list and the time zone and lets lwIP's client retry on its own, which
+// is what makes the daily power cycle (AP often missing at boot) safe.
+//
+// Runs after beginWifi() for the same reason the server does - sntp_init()
+// sends through lwip, and WiFi.mode() is what brings the netif/tcpip stack up.
+// Failing to reach a server is not fatal: the effects do not use the clock,
+// only the stamps /health and the logs report.
+void beginNtp() {
+  configTime(kNtpGmtOffsetSec, kNtpDaylightOffsetSec, kNtpServer);
+  Serial.printf("NTP: %s, UTC offset %ld s\n", kNtpServer, kNtpGmtOffsetSec);
+}
+
 // Fire-and-forget: bring the STA interface up and queue the first connect
 // attempt, but never wait for the AP. In arduino-esp32 2.0.17
 // WiFi.waitForConnectResult() is a blocking delay() loop, so waiting here
@@ -292,6 +328,9 @@ void setup() {
   // After beginWifi(), like the server: mDNS needs the STA netif that
   // WiFi.mode() creates.
   beginMdns();
+
+  // Also needs the netif stack, but not the AP: SNTP retries until it gets out.
+  beginNtp();
 
   engine.setMode(ledfx::kModeSmolder, 0, millis());  // embers, then sleep, green agitation on motion
 }

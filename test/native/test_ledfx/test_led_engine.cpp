@@ -183,8 +183,15 @@ void testParseChannelRejectWhitespace(void);
 // --- formatHealth cases, implemented in test_status.cpp ---
 void testHealthBodyExact(void);
 void testHealthUptimeIsWholeSeconds(void);
+void testHealthBeforeClockSync(void);
 void testHealthBodyFitsExtremeValues(void);
 void testHealthBodyRejectsTinyBuffer(void);
+
+// --- clock.h cases, implemented in test_clock.cpp ---
+void testUtcStampKnownEpochs(void);
+void testUtcStampLeapDay(void);
+void testUtcStampRejectsSmallBuffers(void);
+void testClockIsSetThreshold(void);
 
 // --- tuning table / POST /config cases, implemented in test_tuning.cpp ---
 void testTuningDefaultsAreValid(void);
@@ -1126,8 +1133,13 @@ int main(void) {
   RUN_TEST(testParseChannelRejectWhitespace);
   RUN_TEST(testHealthBodyExact);
   RUN_TEST(testHealthUptimeIsWholeSeconds);
+  RUN_TEST(testHealthBeforeClockSync);
   RUN_TEST(testHealthBodyFitsExtremeValues);
   RUN_TEST(testHealthBodyRejectsTinyBuffer);
+  RUN_TEST(testUtcStampKnownEpochs);
+  RUN_TEST(testUtcStampLeapDay);
+  RUN_TEST(testUtcStampRejectsSmallBuffers);
+  RUN_TEST(testClockIsSetThreshold);
   RUN_TEST(testTuningDefaultsAreValid);
   RUN_TEST(testTuningTableIsWellFormed);
   RUN_TEST(testTuningEveryFieldEditsOnlyItself);
