@@ -16,7 +16,6 @@
 namespace {
 
 constexpr uint16_t kHttpPort = 80;
-constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 constexpr uint32_t kWifiRetryIntervalMs = 5000;
 
 Adafruit_TLC5947 tlc(ledfx::kTlcDriverCount, ledfx::kTlcClockPin, ledfx::kTlcDataPin,
@@ -69,23 +68,35 @@ void handleMode() {
   server.send(200, "text/plain", "ok\n");
 }
 
+// Fire-and-forget: bring the STA interface up and queue the first connect
+// attempt, but never wait for the AP. In arduino-esp32 2.0.17
+// WiFi.waitForConnectResult() is a blocking delay() loop, so waiting here
+// blacked out the rig (engine, radar, HTTP) for the whole timeout on every
+// power cycle where the AP was absent or slow. Connection state is polled and
+// retried from maintainWifi() instead.
 void beginWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  if (WiFi.waitForConnectResult(kWifiConnectTimeoutMs) == WL_CONNECTED) {
-    Serial.print("WiFi up: http://");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("WiFi not connected, still retrying");
-  }
+  Serial.println("WiFi connecting in background");
 }
 
 // Required: WiFi.setAutoReconnect() is not wired up in arduino-esp32 2.0.17
 // (the flag has no reader in WiFiSTA.cpp/WiFiGeneric.cpp), so nothing else
 // re-establishes the link after an AP restart or a dropout. Do not delete.
+// Also the only place the link is announced: begin() no longer waits, so the
+// first connected poll in loop() is the first chance to report an IP.
 void maintainWifi(uint32_t nowMs) {
   static uint32_t lastAttemptMs = 0;
-  if (WiFi.status() == WL_CONNECTED || nowMs - lastAttemptMs < kWifiRetryIntervalMs) {
+  static bool reported = false;
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!reported) {
+      reported = true;
+      Serial.print("WiFi up: http://");
+      Serial.println(WiFi.localIP());
+    }
+    return;
+  }
+  if (nowMs - lastAttemptMs < kWifiRetryIntervalMs) {
     return;
   }
   lastAttemptMs = nowMs;
@@ -107,14 +118,16 @@ void setup() {
   }
   pushFrame();  // all channels off as soon as the driver is up
 
-  beginWifi();
-
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/mode", HTTP_POST, handleMode);
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
 
   engine.setMode(ledfx::kModeSmolder, 0, millis());  // embers, then sleep, green agitation on motion
+
+  // Last, and without waiting: the rig must animate on every power cycle even
+  // when the AP is missing.
+  beginWifi();
 }
 
 void loop() {

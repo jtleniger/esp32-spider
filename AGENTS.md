@@ -24,7 +24,7 @@ pio run -e esp32dev  # compile (first run downloads ~1 GB)
 - **No heap use in `lib/ledfx`**; the smolder flicker hashes integers instead of `rand()` so the engine stays deterministic for host assertions.
 - **Tuning constants live only in `led_layout.h`** but tests hard-code derived values (peak 4095, one step = 63), so changing one means updating those expectations.
 - **One `main()` per suite**: all files under `test/native/test_ledfx/` link into one binary (`test_led_engine.cpp` defines `main()` and runs `test_modes.cpp`'s cases).
-- **`maintainWifi()` is load-bearing**: `WiFi.setAutoReconnect()` is a no-op in arduino-esp32 2.0.17, so nothing else reconnects after an AP restart.
+- **`maintainWifi()` is load-bearing**: `WiFi.setAutoReconnect()` is a no-op in arduino-esp32 2.0.17, so nothing else reconnects after an AP restart. It also owns the connect poll: `beginWifi()` deliberately does not wait, because `WiFi.waitForConnectResult()` is a blocking `delay()` loop and the rig is power-cycled daily with the AP not always up. WiFi must never gate the engine - setup() starts it last and loop() only polls/retries.
 - **GPIO2 (`kRadarPin`) is a strapping pin** that must be low at reset; a radar idling high can block boot mode. `INPUT_PULLDOWN` accommodates the hardware, it isn't a bug fix.
 - Style: 2-space indent, `snake_case` locals, `kCamelCase` constants, trailing `_` members, C++17.
 
