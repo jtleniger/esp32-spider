@@ -12,9 +12,11 @@ enum Mode : uint16_t {
   // with a flicker and a per-eye phase offset; left undisturbed it grows
   // drowsy, then each eye's ember sinks and goes out (and occasionally
   // half-opens again) until the nap ends and the eyes open one at a time.
-  // Motion pulls the rig into a green-only agitation picked at random from a
-  // looping spread, a sweeping beam or darting eyes, and it crossfades back to
-  // the embers once the radar has been quiet briefly.
+  // Motion pulls the rig into an agitation picked at random: the original
+  // eye-by-eye green spread (which holds while motion lasts and fades back into
+  // the embers the moment it stops), a sweeping beam, or darting eyes. The
+  // sweep and dart crossfade back to the embers once the radar has been quiet
+  // briefly.
   kModeSmolder = 0,
   // Lights exactly the channel named by ?c=<channel> at full brightness and
   // holds it there; every other channel stays off. Ignores the radar. Used to

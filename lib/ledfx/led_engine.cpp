@@ -31,7 +31,7 @@ static_assert(kAgitationSweepMinMs < kAgitationSweepMaxMs &&
                   kAgitationDartAttackMs + kAgitationDartHoldMs +
                           kAgitationDartFadeMs ==
                       kAgitationDartStepMs &&
-                  kAgitationRippleLapMs != 0 && kAgitationExitMs != 0 &&
+                  kAgitationRippleExitMs != 0 && kAgitationExitMs != 0 &&
                   kAgitationKindCount == 3,
               "kModeSmolder agitation needs consistent tuning");
 static_assert(kEyeCount * kLedsPerEye == kChannelCount,
@@ -192,25 +192,6 @@ uint32_t rampToward(uint32_t value, uint32_t dtMs, uint32_t rateMs, bool up) {
 
 uint16_t permilleOf(uint32_t ramp) {
   return static_cast<uint16_t>(static_cast<uint64_t>(ramp) * 1000 / kRampScale);
-}
-
-// Green flash envelope for one eye at `elapsedMs` since that eye's flash
-// started, in permille (0..1000): fast attack, flat hold, then a linear fade.
-uint16_t greenEnvelopePermille(uint32_t elapsedMs) {
-  if (elapsedMs < kGreenAttackMs) {
-    return static_cast<uint16_t>(static_cast<uint64_t>(elapsedMs) * 1000 /
-                                 kGreenAttackMs);
-  }
-  const uint32_t fadeStart = kGreenAttackMs + kGreenHoldMs;
-  if (elapsedMs < fadeStart) {
-    return 1000;
-  }
-  if (elapsedMs < fadeStart + kGreenFadeMs) {
-    return static_cast<uint16_t>(
-        1000 - static_cast<uint64_t>(elapsedMs - fadeStart) * 1000 /
-                   kGreenFadeMs);
-  }
-  return 0;
 }
 
 // Eyelid-gesture envelope over kSleepGestureMs, in permille of the eye's ember
@@ -515,7 +496,7 @@ void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
   // Motion always pulls the rig into agitation, from awake or asleep.
   if (radarHigh && smolderState_ != kSmolderAgitated) {
     enterAgitated(nowMs);
-    renderSmolderAgitated(nowMs, out);
+    renderSmolderAgitated(nowMs, radarHigh, out);
     return;
   }
 
@@ -523,12 +504,21 @@ void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
     case kSmolderAgitated:
       if (radarHigh) {
         lastRadarHighMs_ = nowMs;  // hold is anchored to the last motion
+      } else if (agitationKind_ == kAgitationRipple) {
+        // Ripple is motion-driven: the greens hold while the radar is high and
+        // fade back into the embers the moment it drops, so it ends on its own
+        // schedule rather than the shared quiet hold.
+        if (nowMs - lastRadarHighMs_ >= kAgitationRippleExitMs) {
+          enterAwakeQuiet(nowMs);
+          renderSmolderEmbers(nowMs, out);
+          return;
+        }
       } else if (nowMs - lastRadarHighMs_ >= kAgitationHoldMs) {
         enterAwake(nowMs, true);
         renderSmolderWaking(nowMs, out);
         return;
       }
-      renderSmolderAgitated(nowMs, out);
+      renderSmolderAgitated(nowMs, radarHigh, out);
       return;
 
     case kSmolderAsleep:
@@ -573,11 +563,17 @@ void LedEngine::renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out) {
 }
 
 void LedEngine::enterAwake(uint32_t nowMs, bool fromAgitation) {
-  smolderState_ = kSmolderAwake;
-  smolderStateStartMs_ = nowMs;
+  enterAwakeQuiet(nowMs);
   waking_ = true;
   wakeFromAgitation_ = fromAgitation;
   wakeStartMs_ = nowMs;
+}
+
+void LedEngine::enterAwakeQuiet(uint32_t nowMs) {
+  smolderState_ = kSmolderAwake;
+  smolderStateStartMs_ = nowMs;
+  waking_ = false;
+  wakeFromAgitation_ = false;
   sleepHazardStartMs_ = nowMs;
   sleepCheckMs_ = nowMs + kSmolderSleepAfterMs;
 }
@@ -697,11 +693,54 @@ void LedEngine::renderSmolderAsleep(uint32_t nowMs, uint16_t *out) {
   }
 }
 
-void LedEngine::renderSmolderAgitated(uint32_t nowMs, uint16_t *out) {
+void LedEngine::renderSmolderAgitated(uint32_t nowMs, bool radarHigh,
+                                      uint16_t *out) {
+  if (agitationKind_ == kAgitationRipple) {
+    renderSmolderRipple(nowMs, radarHigh, out);
+    return;
+  }
   uint16_t green[kEyeCount] = {};
   agitationFrame(nowMs, green);
   for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
     out[kEyes[eye].green] = green[eye];
+  }
+}
+
+void LedEngine::renderSmolderRipple(uint32_t nowMs, bool radarHigh,
+                                    uint16_t *out) {
+  const uint32_t sinceStart = nowMs - agitationStartMs_;  // wrap intentional
+  const uint32_t sinceMotion = nowMs - lastRadarHighMs_;  // wrap intentional
+  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+    const uint32_t start = static_cast<uint32_t>(eye) * kGreenSpreadMs;
+    uint16_t envelope = 0;
+    if (sinceStart >= start) {
+      const uint32_t age = sinceStart - start;
+      if (age < kGreenAttackMs) {
+        envelope = static_cast<uint16_t>(static_cast<uint64_t>(age) * 1000 /
+                                         kGreenAttackMs);
+      } else if (radarHigh || sinceMotion <= start) {
+        envelope = 1000;  // holding: still moving, or this eye's stagger looms
+      } else {
+        // Motion has stopped: fade out kGreenFadeMs, staggered like the fade-in.
+        const uint32_t fadeAge = sinceMotion - start;
+        envelope = fadeAge >= kGreenFadeMs
+                       ? 0
+                       : static_cast<uint16_t>(
+                             1000 - static_cast<uint64_t>(fadeAge) * 1000 /
+                                        kGreenFadeMs);
+      }
+    }
+    // The embers sit behind the flash: they dim as a green rises and return as
+    // it fades, exactly like the pre-sleep-machine motion flash.
+    uint16_t orange = 0;
+    uint16_t red = 0;
+    emberLevels(eye, nowMs, orange, red);
+    const uint16_t lit = 1000 - envelope;
+    out[kEyes[eye].orange] = saturatePwm(scalePermille(orange, lit));
+    out[kEyes[eye].red] = saturatePwm(scalePermille(red, lit));
+    out[kEyes[eye].green] = saturatePwm(withFlicker(
+        scalePermille(kMaxPwm, envelope), kEyes[eye].green,
+        nowMs / kSmolderFlickerStepMs, kGreenFlickerPwm));
   }
 }
 
@@ -803,28 +842,6 @@ void LedEngine::agitationFrame(uint32_t nowMs, uint16_t *green) {
                                            kAgitationFlickerPwm));
     }
     return;
-  }
-
-  // kAgitationRipple: the original eye-by-eye green spread, looping. An eye's
-  // flash outlives the lap, so the head of the new lap rises before the tail of
-  // the old one has faded and the rig never blinks fully dark.
-  constexpr uint32_t kRippleTotalMs =
-      kGreenAttackMs + kGreenHoldMs + kGreenFadeMs;
-  const uint32_t phase = (nowMs - agitationStartMs_) % kAgitationRippleLapMs;
-  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    const int32_t spread = static_cast<int32_t>(kGreenSpreadMs);
-    int32_t elapsed =
-        static_cast<int32_t>(phase) - static_cast<int32_t>(eye) * spread;
-    if (elapsed < 0) {
-      elapsed += static_cast<int32_t>(kAgitationRippleLapMs);  // previous lap
-    }
-    if (static_cast<uint32_t>(elapsed) >= kRippleTotalMs) {
-      continue;
-    }
-    const uint8_t channel = kEyes[eye].green;
-    green[eye] = saturatePwm(withFlicker(
-        scalePermille(kMaxPwm, greenEnvelopePermille(elapsed)), channel,
-        flickerStep, kGreenFlickerPwm));
   }
 }
 

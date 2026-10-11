@@ -14,9 +14,9 @@ enum SmolderState : uint8_t {
   kSmolderAgitated = 2,  // one green agitation animation
 };
 
-// Green-only agitation animations kModeSmolder picks at random.
+// Agitation animations kModeSmolder picks at random.
 enum AgitationKind : uint8_t {
-  kAgitationRipple = 0,  // original eye-by-eye green spread, looping
+  kAgitationRipple = 0,  // original motion flash: spread, hold, motion-stop fade
   kAgitationSweep = 1,   // bright green eye sweeping left<->right
   kAgitationDart = 2,    // random single eyes snapping green
 };
@@ -76,14 +76,22 @@ class LedEngine {
   void emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange, uint16_t &red);
   // Renders the asleep state: progressive eyelid closures plus half-open events.
   void renderSmolderAsleep(uint32_t nowMs, uint16_t *out);
-  // Renders the green-only agitation animation agitationKind_.
-  void renderSmolderAgitated(uint32_t nowMs, uint16_t *out);
-  // The green level of every eye in the current agitation frame (0 when that
+  // Renders the agitation animation agitationKind_. Ripple writes the embers
+  // too (they rise as its greens fade); sweep and dart are green only.
+  void renderSmolderAgitated(uint32_t nowMs, bool radarHigh, uint16_t *out);
+  // Renders the kAgitationRipple motion flash: eye-by-eye fade-in, hold at full
+  // flicker while the radar sees motion, then a staggered fade-out (the embers
+  // rising underneath) once motion stops.
+  void renderSmolderRipple(uint32_t nowMs, bool radarHigh, uint16_t *out);
+  // The green level of every eye in the current sweep/dart frame (0 when that
   // eye is dark), advancing whatever animation phase needs it.
   void agitationFrame(uint32_t nowMs, uint16_t *green);
   // Advances the sweep through its traverse/rest phases up to nowMs.
   void advanceSweep(uint32_t nowMs);
   void enterAwake(uint32_t nowMs, bool fromAgitation);
+  // Parks in the awake state with no hand-back animation, for a ripple that has
+  // already faded its greens back into the embers.
+  void enterAwakeQuiet(uint32_t nowMs);
   void enterAsleep(uint32_t nowMs);
   void enterAgitated(uint32_t nowMs);
 

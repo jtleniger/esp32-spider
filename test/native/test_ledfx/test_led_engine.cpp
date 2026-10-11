@@ -697,102 +697,101 @@ static void testSmolderMotionWhileAsleepAgitates() {
 
   e.tick(t + 250, true);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
-  TEST_ASSERT_FALSE(anyWarmLit(e));
-  // A darting episode starts its fade from black, so give it a moment.
-  e.tick(t + 300, true);
+  // Every kind lights greens; a darting episode fades up from black, so give it
+  // a moment. Ripple additionally lays the embers back under the flash.
+  e.tick(t + 500, true);
   TEST_ASSERT_TRUE(anyGreenLit(e));
-  TEST_ASSERT_FALSE(anyWarmLit(e));
 }
 
-// Agitation is green-only and moving: warm channels never light, and the greens
-// keep changing which eyes are on.
-static void testSmolderAgitationIsGreenOnlyAndAlive() {
-  ledfx::LedEngine e;
-  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
-  e.tick(0, false);
-  bool litEyes[ledfx::kEyeCount] = {};
-  bool sawGreen = false;
-  uint32_t last = 0;
-  for (uint32_t t = 20; t <= 900; t += 20) {
-    e.tick(t, true);
-    last = t;
-    TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
-    TEST_ASSERT_FALSE(anyWarmLit(e));
-    if (anyGreenLit(e)) sawGreen = true;
-    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-      if (greenLevel(e, eye) > 0) {
-        litEyes[eye] = true;
+// Sweep and dart are green-only and moving: the warm channels never light and
+// the greens keep changing which eyes are on. They hold until the radar has
+// been quiet for kAgitationHoldMs, then crossfade back into the embers.
+static void testSmolderSweepAndDartAreGreenOnlyAndAlive() {
+  const uint8_t kinds[] = {ledfx::kAgitationSweep, ledfx::kAgitationDart};
+  for (uint8_t kind : kinds) {
+    ledfx::LedEngine e;
+    TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+    uint32_t t = 100000;
+    const uint32_t entry = enterAgitationKind(e, kind, t);
+    TEST_ASSERT_TRUE(entry != 0);
+    bool litEyes[ledfx::kEyeCount] = {};
+    bool sawGreen = false;
+    for (uint32_t u = entry; u <= entry + 2000; u += 20) {
+      e.tick(u, true);
+      TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+      TEST_ASSERT_FALSE(anyWarmLit(e));
+      if (anyGreenLit(e)) sawGreen = true;
+      for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+        if (greenLevel(e, eye) > 0) {
+          litEyes[eye] = true;
+        }
       }
     }
-  }
-  uint8_t distinct = 0;
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    if (litEyes[eye]) ++distinct;
-  }
-  TEST_ASSERT_TRUE(distinct >= 2);
-  TEST_ASSERT_TRUE(sawGreen);
+    uint8_t distinct = 0;
+    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+      if (litEyes[eye]) ++distinct;
+    }
+    TEST_ASSERT_TRUE(distinct >= 2);
+    TEST_ASSERT_TRUE(sawGreen);
 
-  // The hold keeps the animation up, then the embers come back.
-  for (uint32_t t = last + 100;
-       t <= last + ledfx::kAgitationHoldMs + ledfx::kAgitationExitMs + 100;
-       t += 100) {
-    e.tick(t, false);
+    // The shared quiet hold keeps the animation up, then the embers come back.
+    for (uint32_t u = entry + 2000 + 100;
+         u <= entry + 2000 + ledfx::kAgitationHoldMs +
+                  ledfx::kAgitationExitMs + 100;
+         u += 100) {
+      e.tick(u, false);
+    }
+    TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+    TEST_ASSERT_TRUE(anyWarmLit(e));
+    TEST_ASSERT_FALSE(anyGreenLit(e));
   }
-  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
-  TEST_ASSERT_TRUE(anyWarmLit(e));
-  TEST_ASSERT_FALSE(anyGreenLit(e));
 }
 
-// The hold keeps the animation up until the radar has been quiet that long.
+// The shared quiet hold keeps a sweep or dart animation up until the radar has
+// been quiet that long.
 static void testSmolderAgitationEndsAfterMotionStops() {
   ledfx::LedEngine e;
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
-  e.tick(0, false);
-  uint32_t last = 0;
-  for (uint32_t t = 100; t <= 300; t += 100) {
-    e.tick(t, true);
-    last = t;
-  }
+  uint32_t t = 100000;
+  const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationSweep, t);
+  TEST_ASSERT_TRUE(entry != 0);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
 
-  e.tick(last + ledfx::kAgitationHoldMs - 1, false);
+  e.tick(entry + ledfx::kAgitationHoldMs - 1, false);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
 
-  e.tick(last + ledfx::kAgitationHoldMs, false);
+  e.tick(entry + ledfx::kAgitationHoldMs, false);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
 
-  for (uint32_t t = last + ledfx::kAgitationHoldMs + 50;
-       t <= last + ledfx::kAgitationHoldMs + ledfx::kAgitationExitMs + 100;
-       t += 50) {
-    e.tick(t, false);
+  for (uint32_t u = entry + ledfx::kAgitationHoldMs + 50;
+       u <= entry + ledfx::kAgitationHoldMs + ledfx::kAgitationExitMs + 100;
+       u += 50) {
+    e.tick(u, false);
   }
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
   TEST_ASSERT_TRUE(anyWarmLit(e));
   TEST_ASSERT_FALSE(anyGreenLit(e));
 }
 
-// Handing back from agitation is a crossfade: the live green frame keeps running
-// while it fades out and the embers rise underneath, never a hard cut from
-// greens to a full-brightness ember frame.
+// Handing back from a sweep or dart is a crossfade: the live green frame keeps
+// running while it fades out and the embers rise underneath, never a hard cut
+// from greens to a full-brightness ember frame.
 static void testSmolderAgitationCrossfadesBackToEmbers() {
   ledfx::LedEngine e;
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
-  e.tick(0, false);
-  uint32_t last = 0;
-  for (uint32_t t = 100; t <= 300; t += 100) {
-    e.tick(t, true);
-    last = t;
-  }
-  const uint32_t exit = last + ledfx::kAgitationHoldMs;
+  uint32_t t = 100000;
+  const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationSweep, t);
+  TEST_ASSERT_TRUE(entry != 0);
+  const uint32_t exit = entry + ledfx::kAgitationHoldMs;
   e.tick(exit, false);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
   TEST_ASSERT_TRUE(anyGreenLit(e));   // the greens carry on where they were
   TEST_ASSERT_FALSE(anyWarmLit(e));   // and the embers start from nothing
 
   uint8_t previous = 0;
-  for (uint32_t t = exit + 25; t <= exit + ledfx::kAgitationExitMs + 100;
-       t += 25) {
-    e.tick(t, false);
+  for (uint32_t u = exit + 25; u <= exit + ledfx::kAgitationExitMs + 100;
+       u += 25) {
+    e.tick(u, false);
     const uint8_t warmEyes = countWarmEyes(e);
     TEST_ASSERT_TRUE(warmEyes >= previous);
     previous = warmEyes;
@@ -802,20 +801,58 @@ static void testSmolderAgitationCrossfadesBackToEmbers() {
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
 }
 
-// The ripple loops without a dark gap: an eye's flash outlives the lap, so the
-// next lap's head is already up when the tail of the old one fades.
-static void testSmolderRippleLoopsWithoutGoingDark() {
+// The ripple is the pre-sleep-machine motion flash: the greens spread eye by
+// eye over the live embers, hold at full flicker for as long as motion lasts,
+// then hand back to the embers with a staggered fade the moment motion stops.
+static void testSmolderRippleSpreadsHoldsAndFadesOut() {
   ledfx::LedEngine e;
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
   uint32_t t = 100000;
   const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationRipple, t);
   TEST_ASSERT_TRUE(entry != 0);
-  for (uint32_t u = entry; u < entry + 4 * ledfx::kAgitationRippleLapMs;
-       u += 10) {
-    e.tick(u, true);
-    TEST_ASSERT_TRUE(anyGreenLit(e));
-    TEST_ASSERT_FALSE(anyWarmLit(e));
+
+  // The flash starts over the live embers, then eye 0 snaps on within its
+  // attack while the rest have not started.
+  e.tick(entry, true);
+  TEST_ASSERT_TRUE(anyWarmLit(e));
+  TEST_ASSERT_EQUAL_UINT16(0, greenLevel(e, 0));
+  e.tick(entry + ledfx::kGreenAttackMs, true);
+  TEST_ASSERT_TRUE(greenLevel(e, 0) >= ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
+  for (uint8_t eye = 1; eye < ledfx::kEyeCount; ++eye) {
+    TEST_ASSERT_EQUAL_UINT16(0, greenLevel(e, eye));
   }
+  e.tick(entry + ledfx::kGreenSpreadMs + ledfx::kGreenAttackMs, true);
+  TEST_ASSERT_TRUE(greenLevel(e, 1) >= ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
+  TEST_ASSERT_EQUAL_UINT16(0, greenLevel(e, 2));
+
+  // Once every eye is up it holds at full flicker while motion persists: no
+  // ember is left showing.
+  const uint32_t holdAt = entry + ledfx::kAgitationHoldMs + 250;
+  e.tick(holdAt, true);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    TEST_ASSERT_TRUE(greenLevel(e, eye) >=
+                     ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
+  }
+  TEST_ASSERT_FALSE(anyWarmLit(e));
+
+  // Motion stops. Eye 0 fades a full kGreenFadeMs and the embers return
+  // underneath while the staggered last eye still holds.
+  e.tick(holdAt + ledfx::kGreenFadeMs, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+  TEST_ASSERT_EQUAL_UINT16(0, greenLevel(e, 0));
+  TEST_ASSERT_TRUE(anyWarmLit(e));
+  TEST_ASSERT_TRUE(greenLevel(e, ledfx::kEyeCount - 1) >=
+                   ledfx::kMaxPwm - ledfx::kGreenFlickerPwm);
+
+  // When the staggered tail has run the greens are gone, the embers are back
+  // and the episode has ended on its own schedule.
+  e.tick(holdAt + ledfx::kAgitationRippleExitMs, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    TEST_ASSERT_EQUAL_UINT16(0, greenLevel(e, eye));
+  }
+  TEST_ASSERT_TRUE(anyWarmLit(e));
 }
 
 // The sweep crosses the face slowly, rests on the far eye, then crosses back.
@@ -1338,10 +1375,10 @@ int main(void) {
   RUN_TEST(testSmolderWakesEyeByEye);
   RUN_TEST(testSmolderHalfOpensEyesWhileAsleep);
   RUN_TEST(testSmolderMotionWhileAsleepAgitates);
-  RUN_TEST(testSmolderAgitationIsGreenOnlyAndAlive);
+  RUN_TEST(testSmolderSweepAndDartAreGreenOnlyAndAlive);
   RUN_TEST(testSmolderAgitationEndsAfterMotionStops);
   RUN_TEST(testSmolderAgitationCrossfadesBackToEmbers);
-  RUN_TEST(testSmolderRippleLoopsWithoutGoingDark);
+  RUN_TEST(testSmolderRippleSpreadsHoldsAndFadesOut);
   RUN_TEST(testSmolderSweepCrossesAndRests);
   RUN_TEST(testSmolderDartFadesAndHopsSlowly);
   RUN_TEST(testSmolderAgitationKindsVary);
