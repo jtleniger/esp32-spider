@@ -4,6 +4,7 @@
 
 #include "led_layout.h"
 #include "modes.h"
+#include "tuning.h"
 
 namespace ledfx {
 
@@ -38,6 +39,15 @@ class LedEngine {
   bool setMode(uint16_t mode, uint16_t channel, uint32_t nowMs);
 
   uint16_t mode() const { return mode_; }
+
+  // Live tuning: every knob the effects read, defaulting to the constexprs in
+  // led_layout.h. POST /config writes through the non-const reference and the
+  // engine reads the fields on the next tick, so an edit lands without
+  // restarting the mode. A caller that changes anything here must leave the
+  // result satisfying validateTuning() (tuning.h), which is what keeps the
+  // engine's span subtractions and divisors safe.
+  Tuning &tuning() { return tuning_; }
+  const Tuning &tuning() const { return tuning_; }
 
   SmolderState smolderState() const { return smolderState_; }
   uint8_t agitationKind() const { return agitationKind_; }
@@ -103,6 +113,9 @@ class LedEngine {
   // flicker frantic.
   void renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
+  // Declared before the state it feeds: the constructor derives pulsePeriodMs_
+  // from it, so it must already be constructed.
+  Tuning tuning_;
   uint16_t frame_[kChannelCount];
   uint16_t mode_;
   uint16_t channel_;        // kModeSingleChannel only: channel to light

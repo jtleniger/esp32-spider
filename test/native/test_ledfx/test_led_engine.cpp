@@ -180,6 +180,43 @@ void testParseChannelRejectOutOfRange(void);
 void testParseChannelRejectNonDigits(void);
 void testParseChannelRejectWhitespace(void);
 
+// --- formatHealth cases, implemented in test_status.cpp ---
+void testHealthBodyExact(void);
+void testHealthUptimeIsWholeSeconds(void);
+void testHealthBeforeClockSync(void);
+void testHealthBodyFitsExtremeValues(void);
+void testHealthBodyRejectsTinyBuffer(void);
+
+// --- clock.h cases, implemented in test_clock.cpp ---
+void testUtcStampKnownEpochs(void);
+void testUtcStampLeapDay(void);
+void testUtcStampRejectsSmallBuffers(void);
+void testClockIsSetThreshold(void);
+
+// --- logs.h cases, implemented in test_logs.cpp ---
+void testLogNameFromBootEpoch(void);
+void testLogNameRejectsSmallBuffers(void);
+void testLogLineIsStampPlusNewline(void);
+void testLogNameValidationAcceptsWrittenNames(void);
+void testLogNameValidationRejectsEverythingElse(void);
+void testLogListBody(void);
+void testLogListingKeepsNewest(void);
+void testLogListingIsOrderIndependent(void);
+void testLogListingBelowCapacity(void);
+void testLogListFitsWorstCase(void);
+
+// --- tuning table / POST /config cases, implemented in test_tuning.cpp ---
+void testTuningDefaultsAreValid(void);
+void testTuningTableIsWellFormed(void);
+void testTuningEveryFieldEditsOnlyItself(void);
+void testTuningRejectsUnknownField(void);
+void testTuningRejectsBadValues(void);
+void testTuningRejectsInconsistent(void);
+void testTuningMultiEditIsAtomic(void);
+void testTuningClampPullsValuesIntoRange(void);
+void testTuningFormatListsEveryField(void);
+void testEngineFollowsEditedTuning(void);
+
 // --- shared cases ---
 
 // /mode's ?m= values are the enum values, so their numbering is a contract.
@@ -1106,5 +1143,34 @@ int main(void) {
   RUN_TEST(testParseChannelRejectOutOfRange);
   RUN_TEST(testParseChannelRejectNonDigits);
   RUN_TEST(testParseChannelRejectWhitespace);
+  RUN_TEST(testHealthBodyExact);
+  RUN_TEST(testHealthUptimeIsWholeSeconds);
+  RUN_TEST(testHealthBeforeClockSync);
+  RUN_TEST(testHealthBodyFitsExtremeValues);
+  RUN_TEST(testHealthBodyRejectsTinyBuffer);
+  RUN_TEST(testUtcStampKnownEpochs);
+  RUN_TEST(testUtcStampLeapDay);
+  RUN_TEST(testUtcStampRejectsSmallBuffers);
+  RUN_TEST(testClockIsSetThreshold);
+  RUN_TEST(testLogNameFromBootEpoch);
+  RUN_TEST(testLogNameRejectsSmallBuffers);
+  RUN_TEST(testLogLineIsStampPlusNewline);
+  RUN_TEST(testLogNameValidationAcceptsWrittenNames);
+  RUN_TEST(testLogNameValidationRejectsEverythingElse);
+  RUN_TEST(testLogListBody);
+  RUN_TEST(testLogListingKeepsNewest);
+  RUN_TEST(testLogListingIsOrderIndependent);
+  RUN_TEST(testLogListingBelowCapacity);
+  RUN_TEST(testLogListFitsWorstCase);
+  RUN_TEST(testTuningDefaultsAreValid);
+  RUN_TEST(testTuningTableIsWellFormed);
+  RUN_TEST(testTuningEveryFieldEditsOnlyItself);
+  RUN_TEST(testTuningRejectsUnknownField);
+  RUN_TEST(testTuningRejectsBadValues);
+  RUN_TEST(testTuningRejectsInconsistent);
+  RUN_TEST(testTuningMultiEditIsAtomic);
+  RUN_TEST(testTuningClampPullsValuesIntoRange);
+  RUN_TEST(testTuningFormatListsEveryField);
+  RUN_TEST(testEngineFollowsEditedTuning);
   return UNITY_END();
 }
