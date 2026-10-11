@@ -108,8 +108,8 @@ constexpr uint32_t kSleepFallMinMs = 5000;
 constexpr uint32_t kSleepFallMaxMs = 20000;
 
 // Occasional half-opens while asleep: gaps between events and group size.
-constexpr uint32_t kSleepOpenMinGapMs = 5000;
-constexpr uint32_t kSleepOpenMaxGapMs = 60000;
+constexpr uint32_t kSleepOpenMinGapMs = 1000;
+constexpr uint32_t kSleepOpenMaxGapMs = 5000;
 constexpr uint16_t kSleepOpenGroupPermille = 350;  // chance an eye joins an event
 
 // The eyelid gesture: the eye's ember dims, flares a little, then goes out
@@ -129,8 +129,8 @@ constexpr uint32_t kSmolderWakeMs =
 
 // --- kModeSmolder agitation (green) ---
 // On motion the rig runs one of kAgitationKindCount green animations chosen at
-// random per episode. Sweep and dart run until the radar has been quiet for
-// kAgitationHoldMs, then crossfade back into the embers over kAgitationExitMs
+// random per episode. The sweep runs until the radar has been quiet for
+// kAgitationHoldMs, then crossfades back into the embers over kAgitationExitMs
 // while the animation keeps running underneath. Ripple instead reproduces the
 // pre-sleep-machine motion flash (see below): it holds while the radar stays
 // high and fades back, over the embers, as soon as motion stops.
@@ -149,19 +149,6 @@ constexpr uint32_t kAgitationSweepMaxMs = 1000;
 constexpr uint32_t kAgitationSweepPauseMinMs = 500;
 constexpr uint32_t kAgitationSweepPauseMaxMs = 2000;
 constexpr uint16_t kAgitationSweepTailPermille = 3500;  // 3.5-eye trail
-// Dart: every eye runs its own on/off clock, so the lit set never steps in
-// lockstep. An eye fades up, holds at a flicker for a random
-// kAgitationDartOnMinMs..kAgitationDartOnMaxMs (brief flashes and long
-// lingering glows both happen), fades back out, then stays dark for a random
-// kAgitationDartOffMinMs..kAgitationDartOffMaxMs before it may fire again.
-constexpr uint32_t kAgitationDartOnMinMs = 100;
-constexpr uint32_t kAgitationDartOnMaxMs = 650;
-constexpr uint32_t kAgitationDartOffMinMs = 140;
-constexpr uint32_t kAgitationDartOffMaxMs = 820;
-// Pulse edges. Each ramp is clamped to a third of the pulse, so even the
-// briefest flash still eases in and out instead of snapping.
-constexpr uint32_t kAgitationDartAttackMs = 60;
-constexpr uint32_t kAgitationDartFadeMs = 120;
 // Ripple: exactly the mode 0 motion flash from before the sleep machine. Eye 0
 // snaps green within kGreenAttackMs, the rest follow kGreenSpreadMs apart, and
 // every eye then holds at full brightness with an ember flicker for as long as
@@ -193,42 +180,6 @@ constexpr uint32_t kStalkerReleaseMs = 900;      // decay back to scanning
 constexpr uint16_t kStalkerPopPwm = kMaxPwm;     // settled colour level (red)
 constexpr uint16_t kStalkerPopFlickerPwm = 1000; // stutter on the wake-up (at full)
 
-// --- kModeBlink (mode 4) tuning ---
-// Each blink lights a random group of eyes for kBlinkOnMs and gives every
-// blinking eye a single pseudo-randomly chosen colour; one blink in
-// kBlinkDoubleOneIn is a double blink (a second pulse after kBlinkOffMs). The
-// lit level sputters by kBlinkFlickerPwm, and the dark gaps between blinks are
-// hashed from kBlinkMinGapMs up to kBlinkMaxGapMs (longer on average).
-constexpr uint32_t kBlinkOnMs = 160;             // lit phase of one blink pulse
-constexpr uint32_t kBlinkOffMs = 150;            // dark gap inside a double blink
-constexpr uint32_t kBlinkMinGapMs = 420;         // minimum dark time between blinks
-constexpr uint32_t kBlinkMaxGapMs = 2600;        // maximum dark time between blinks
-constexpr uint16_t kBlinkGroupPermille = 450;    // chance an eye joins a group
-constexpr uint16_t kBlinkDoubleOneIn = 5;        // 1 in N blinks is a double blink
-constexpr uint16_t kBlinkLevelPwm = kMaxPwm;     // blink peak brightness
-constexpr uint16_t kBlinkFlickerPwm = 900;       // sputter amplitude
-constexpr uint32_t kBlinkFlickerStepMs = 37;     // sputter refresh interval
-
-// --- kModeHeartbeat (mode 5) tuning ---
-// A "lub-dub" pair of thumps per beat. Agitation ramps up while motion is seen
-// and decays once it stops: calm beats are green (trimmed by
-// kHeartbeatGreenPermille because green reads brighter), agitated beats are
-// red, and the beat period shortens with agitation. Orange pulses as a warm
-// share of the red beat, and every thump carries a flicker.
-constexpr uint32_t kHeartbeatCalmPeriodMs = 1900;  // beat period with no motion
-constexpr uint32_t kHeartbeatFastPeriodMs = 430;   // beat period at full agitation
-constexpr uint32_t kHeartbeatEscalateMs = 2500;    // motion time to full agitation
-constexpr uint32_t kHeartbeatCoolMs = 6000;        // calm time to shed agitation
-constexpr uint32_t kHeartbeatThumpMs = 160;        // width of one thump (gradual)
-constexpr uint32_t kHeartbeatDubDelayMs = 260;     // lub -> dub start spacing
-constexpr uint16_t kHeartbeatLubGainPermille = 1000;
-constexpr uint16_t kHeartbeatDubGainPermille = 650;
-constexpr uint16_t kHeartbeatOrangePermille = 500; // orange share of the red beat
-constexpr uint16_t kHeartbeatGreenPermille = 620;  // green read-brightness trim
-constexpr uint16_t kHeartbeatFlickerPwm = 260;     // thump flicker amplitude
-constexpr uint32_t kHeartbeatFlickerStepMs = 43;   // flicker refresh interval
-constexpr uint32_t kHeartbeatLevels = 64;          // quantise the envelope
-
 // --- kModeToxic (mode 6) tuning ---
 // A dim green bubbling base with an isolated spark that runs around the eye
 // ring; each revolution the spark picks orange or red at random. Motion (a
@@ -246,20 +197,5 @@ constexpr uint32_t kToxicSparkFastStepMs = 130;    // ms per eye, frantic
 constexpr uint16_t kToxicSparkTailPermille = 900;  // trailing glow: head only
 constexpr uint32_t kToxicMotionRampMs = 600;       // ramp to/from frantic
 constexpr uint32_t kToxicFlickerStepMs = 43;       // spark flicker refresh
-
-// --- kModeHypnotic (mode 7) tuning ---
-// A chase head rotates forward around the eye ring; every lit eye shows a
-// single pseudo-randomly chosen colour (reshuffled each revolution) and a
-// trailing glow sits behind the head. The per-eye rate is mixed with a triangle
-// wave so the chase does not run at a constant speed, and the radar level
-// selects the fast base step.
-constexpr uint32_t kHypnoSlowStepMs = 260;         // ms per eye, idle
-constexpr uint32_t kHypnoFastStepMs = 80;          // ms per eye, radar high
-constexpr uint16_t kHypnoTailPermille = 2200;      // trailing glow (2.2 eyes)
-constexpr uint16_t kHypnoHeadPwm = kMaxPwm;        // head brightness
-constexpr uint16_t kHypnoFlickerPwm = 380;         // flicker on the chase
-constexpr uint32_t kHypnoFlickerStepMs = 41;       // flicker refresh interval
-constexpr uint32_t kHypnoSurgePeriodMs = 2600;     // speed-modulation period
-constexpr uint16_t kHypnoSurgePermille = 350;      // +/- 35% rate swing
 
 }  // namespace ledfx

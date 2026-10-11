@@ -20,7 +20,7 @@ pio run -e esp32dev  # compile (first run downloads ~1 GB)
 
 - **Nothing in `lib/` includes Arduino**; logic is driven by `tick(nowMs, radarHigh)`. That separation makes behaviour testable in this container, and `loop()` must never `delay()` so HTTP serving coexists.
 - **`tick` returns true only when a channel changed**, and `main.cpp` pushes a TLC5947 frame only then - the driver bit-bangs 24x12 bits per write, so never push unconditionally.
-- **Mode numbers are the HTTP contract**: add an enumerator before `kModeCount` plus a `tick` branch; never renumber an existing mode.
+- **Mode numbers are the HTTP contract**: a new effect gets an enumerator with an explicit value, a `tick` branch and an `isValidMode()` case; never renumber or reuse a retired mode's number (4, 5 and 7 are dead holes left by removed effects). `kModeCount` is only the parser's numeric bound, not the live-mode count.
 - **No heap use in `lib/ledfx`**; the smolder flicker hashes integers instead of `rand()` so the engine stays deterministic for host assertions.
 - **Tuning constants live only in `led_layout.h`** but tests hard-code derived values (peak 4095, one step = 63), so changing one means updating those expectations.
 - **One `main()` per suite**: all files under `test/native/test_ledfx/` link into one binary (`test_led_engine.cpp` defines `main()` and runs `test_modes.cpp`'s cases).

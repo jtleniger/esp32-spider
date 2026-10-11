@@ -28,43 +28,20 @@ static_assert(kAgitationSweepMinMs < kAgitationSweepMaxMs &&
                   kAgitationFlickerPwm < kMaxPwm &&
                   kAgitationSweepTailPermille != 0 &&
                   kAgitationSweepTailPermille <= (kEyeCount - 1) * 1000 &&
-                  kAgitationDartOnMinMs >= 3 &&
-                  kAgitationDartOnMinMs < kAgitationDartOnMaxMs &&
-                  kAgitationDartOffMinMs != 0 &&
-                  kAgitationDartOffMinMs < kAgitationDartOffMaxMs &&
-                  kAgitationDartAttackMs != 0 &&
-                  kAgitationDartFadeMs != 0 &&
                   kAgitationRippleExitMs != 0 && kAgitationExitMs != 0 &&
-                  kAgitationKindCount == 3,
+                  kAgitationKindCount == 2,
               "kModeSmolder agitation needs consistent tuning");
 static_assert(kEyeCount * kLedsPerEye == kChannelCount,
               "every channel must belong to exactly one eye LED");
 static_assert(kStalkerPopMs != 0 && kStalkerReleaseMs != 0 &&
                   kStalkerStepMs != 0 && kStalkerFlickerStepMs != 0,
               "kModeStalker needs nonzero tuning");
-static_assert(kBlinkOnMs != 0 && kBlinkOffMs != 0 &&
-                  kBlinkMinGapMs < kBlinkMaxGapMs && kBlinkDoubleOneIn != 0 &&
-                  kBlinkLevelPwm > kBlinkFlickerPwm && kBlinkFlickerStepMs != 0,
-              "kModeBlink needs nonzero tuning");
-static_assert(kHeartbeatThumpMs >= 2 && kHeartbeatLevels != 0 &&
-                  kHeartbeatCalmPeriodMs > kHeartbeatFastPeriodMs &&
-                  kHeartbeatEscalateMs != 0 && kHeartbeatCoolMs != 0 &&
-                  kHeartbeatFlickerStepMs != 0 &&
-                  kHeartbeatFastPeriodMs >= kHeartbeatDubDelayMs + kHeartbeatThumpMs,
-              "kModeHeartbeat needs consistent tuning");
 static_assert(kToxicSparkIdleStepMs > kToxicSparkFastStepMs &&
                   kToxicSparkFastStepMs != 0 && kToxicSparkTailPermille != 0 &&
                   kToxicSparkTailPermille <= 1000 &&
                   kToxicGreenStepMs != 0 && kToxicFlickerStepMs != 0 &&
                   kToxicMotionRampMs != 0,
               "kModeToxic needs nonzero tuning");
-static_assert(kHypnoSlowStepMs > kHypnoFastStepMs && kHypnoFastStepMs != 0 &&
-                  kHypnoTailPermille != 0 &&
-                  kHypnoTailPermille <= kEyeCount * 1000 &&
-                  kHypnoFlickerStepMs != 0 && kHypnoSurgePeriodMs != 0 &&
-                  kHypnoHeadPwm > kHypnoFlickerPwm &&
-                  kHypnoSurgePermille < 1000,
-              "kModeHypnotic needs consistent tuning");
 
 uint16_t saturatePwm(int32_t value) {
   if (value < 0) {
@@ -160,18 +137,6 @@ int32_t withFlicker(int32_t base, uint8_t channel, uint32_t step,
                               static_cast<uint16_t>(permille));
 }
 
-// Triangle wave in [-amp, amp] permille over `periodMs`, driven by absolute
-// `nowMs`. Used to modulate the kModeHypnotic chase rate so it never runs at a
-// constant speed.
-int32_t trianglePermille(uint32_t nowMs, uint32_t periodMs, uint16_t amp) {
-  const uint32_t pos = nowMs % periodMs;
-  const uint32_t half = periodMs / 2;
-  const uint32_t tri = (pos < half) ? pos : (periodMs - pos);  // 0..half
-  return static_cast<int32_t>(
-             static_cast<uint64_t>(tri) * (2 * amp) / periodMs) -
-         amp;
-}
-
 // Linear interpolation: `from` at permille 0, `to` at permille 1000.
 int32_t lerpPermille(int32_t from, int32_t to, uint16_t permille) {
   return from + static_cast<int32_t>(
@@ -257,26 +222,6 @@ uint16_t wakePermille(uint32_t nowMs, uint32_t wakeStartMs, uint8_t eye) {
   return elapsed < kSleepGestureMs ? wakeGesturePermille(elapsed) : 1000;
 }
 
-// One dart pulse's envelope in permille: fade up, hold, fade back down. Each
-// ramp is clamped to a third of the pulse so the briefest flash still eases
-// rather than snapping. Callers pass elapsedMs in [0, durMs).
-uint16_t dartPulsePermille(uint32_t elapsedMs, uint32_t durMs) {
-  const uint32_t ramp = durMs / 3;
-  const uint32_t attack = kAgitationDartAttackMs < ramp ? kAgitationDartAttackMs
-                                                        : ramp;
-  const uint32_t fade =
-      kAgitationDartFadeMs < ramp ? kAgitationDartFadeMs : ramp;
-  if (elapsedMs < attack) {
-    return static_cast<uint16_t>(static_cast<uint64_t>(elapsedMs) * 1000 /
-                                 attack);
-  }
-  if (elapsedMs + fade >= durMs) {
-    return static_cast<uint16_t>(static_cast<uint64_t>(durMs - elapsedMs) *
-                                 1000 / fade);
-  }
-  return 1000;
-}
-
 // Length of one sweep traverse / rest, hashed from its phase number.
 uint32_t sweepTraverseMs(uint32_t seq) {
   return kAgitationSweepMinMs +
@@ -288,33 +233,6 @@ uint32_t sweepRestMs(uint32_t seq) {
   return kAgitationSweepPauseMinMs +
          hashRange(seq * 2654435761u + 0x93u,
                    kAgitationSweepPauseMaxMs - kAgitationSweepPauseMinMs);
-}
-
-// One triangular thump starting at `startMs` inside the beat, scaled by
-// `gainPermille` (0..1000). Zero outside its kHeartbeatThumpMs window.
-uint16_t thumpPermille(uint32_t phaseMs, uint32_t startMs, uint16_t gainPermille) {
-  if (phaseMs < startMs) {
-    return 0;
-  }
-  const uint32_t t = phaseMs - startMs;
-  if (t >= kHeartbeatThumpMs) {
-    return 0;
-  }
-  const uint32_t half = kHeartbeatThumpMs / 2;
-  const uint32_t level = (t < half) ? (t * 1000 / half)
-                                    : ((kHeartbeatThumpMs - t) * 1000 / half);
-  return static_cast<uint16_t>(level * gainPermille / 1000);
-}
-
-// Lub + dub envelope of a beat, quantised to kHeartbeatLevels so the silent
-// stretch between beats does not push a frame every tick.
-uint16_t thumpEnergyPermille(uint32_t phaseMs) {
-  const uint16_t lub = thumpPermille(phaseMs, 0, kHeartbeatLubGainPermille);
-  const uint16_t dub = thumpPermille(phaseMs, kHeartbeatDubDelayMs,
-                                     kHeartbeatDubGainPermille);
-  const uint32_t peak = lub > dub ? lub : dub;
-  return static_cast<uint16_t>(peak * kHeartbeatLevels / 1000) * 1000 /
-         kHeartbeatLevels;
 }
 
 }  // namespace
@@ -349,34 +267,18 @@ LedEngine::LedEngine()
       sweepPhaseStartMs_(0),
       sweepPhaseEndMs_(0),
       sweepSeq_(0),
-      dartOn_{},
-      dartPhaseStartMs_{},
-      dartPhaseEndMs_{},
       stalkerAlert_(0),
       stalkerLastTickMs_(0),
       stalkerStartMs_(0),
-      blinkActive_(false),
-      blinkStartMs_(0),
-      blinkNextMs_(0),
-      blinkSeq_(0),
-      blinkPulses_(0),
-      blinkMask_(0),
-      agitation_(0),
-      beatPhaseMs_(0),
-      beatPeriodMs_(kHeartbeatCalmPeriodMs),
-      heartbeatLastTickMs_(0),
       toxicMotion_(0),
       toxicSparkPhase_(0),
       toxicCycle_(0),
       toxicSparkRed_(false),
       toxicLastTickMs_(0),
-      hypnoPhase_(0),
-      hypnoCycle_(0),
-      hypnoLastTickMs_(0),
       active_(false) {}
 
 bool LedEngine::setMode(uint16_t mode, uint16_t channel, uint32_t nowMs) {
-  if (mode >= kModeCount) {
+  if (!isValidMode(mode)) {
     return false;
   }
   if (mode == kModeSingleChannel && channel >= kChannelCount) {
@@ -403,34 +305,16 @@ bool LedEngine::setMode(uint16_t mode, uint16_t channel, uint32_t nowMs) {
   agitationKind_ = 0;
   agitationSeq_ = 0;
   sweepSeq_ = 0;
-  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    dartOn_[eye] = false;
-    dartPhaseStartMs_[eye] = nowMs;
-    dartPhaseEndMs_[eye] = nowMs;
-  }
   agitationStartMs_ = nowMs;
   lastRadarHighMs_ = nowMs;
   stalkerAlert_ = 0;
   stalkerLastTickMs_ = nowMs;
   stalkerStartMs_ = nowMs;
-  blinkActive_ = false;
-  blinkStartMs_ = nowMs;
-  blinkNextMs_ = nowMs;  // first blink starts on the next tick
-  blinkSeq_ = 0;
-  blinkPulses_ = 0;
-  blinkMask_ = 0;
-  agitation_ = 0;
-  beatPhaseMs_ = 0;
-  beatPeriodMs_ = kHeartbeatCalmPeriodMs;
-  heartbeatLastTickMs_ = nowMs;
   toxicMotion_ = 0;
   toxicSparkPhase_ = 0;
   toxicCycle_ = 0;
   toxicSparkRed_ = hashRange(0x9E3779B9u, 2) != 0;
   toxicLastTickMs_ = nowMs;
-  hypnoPhase_ = 0;
-  hypnoCycle_ = 0;
-  hypnoLastTickMs_ = nowMs;
   active_ = true;
   std::memset(frame_, 0, sizeof(frame_));
   return true;
@@ -451,17 +335,8 @@ bool LedEngine::tick(uint32_t nowMs, bool radarHigh) {
       case kModeStalker:
         renderStalker(nowMs, radarHigh, next);
         break;
-      case kModeBlink:
-        renderBlink(nowMs, next);
-        break;
-      case kModeHeartbeat:
-        renderHeartbeat(nowMs, radarHigh, next);
-        break;
       case kModeToxic:
         renderToxic(nowMs, radarHigh, next);
-        break;
-      case kModeHypnotic:
-        renderHypnotic(nowMs, radarHigh, next);
         break;
       default:  // kModeSmolder
         renderSmolder(nowMs, radarHigh, next);
@@ -619,40 +494,6 @@ void LedEngine::enterAgitated(uint32_t nowMs) {
   sweepPhaseStartMs_ = nowMs;
   sweepPhaseEndMs_ = nowMs + sweepTraverseMs(sweepSeq_);
   ++sweepSeq_;
-
-  // Seed each eye's independent dart clock, staggered so the eyes never step
-  // together: roughly half start already partway into a lit pulse, the rest
-  // start dark for a random gap.
-  bool anyOn = false;
-  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    const uint32_t seed =
-        nowMs * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x1Fu;
-    if (hashRange(seed + 0x9Bu, 2) != 0) {
-      const uint32_t onMs =
-          kAgitationDartOnMinMs +
-          hashRange(seed, kAgitationDartOnMaxMs - kAgitationDartOnMinMs);
-      const uint32_t into = hashRange(seed + 0x33u, onMs);
-      dartOn_[eye] = true;
-      dartPhaseStartMs_[eye] = nowMs - into;
-      dartPhaseEndMs_[eye] = dartPhaseStartMs_[eye] + onMs;
-      anyOn = true;
-    } else {
-      dartOn_[eye] = false;
-      dartPhaseStartMs_[eye] = nowMs;
-      dartPhaseEndMs_[eye] =
-          nowMs + kAgitationDartOffMinMs +
-          hashRange(seed + 0x57u,
-                    kAgitationDartOffMaxMs - kAgitationDartOffMinMs);
-    }
-  }
-  if (!anyOn) {
-    // A darting face must never open all-dark: put one eye mid-pulse.
-    const uint8_t eye = static_cast<uint8_t>(
-        hashRange(nowMs * 2654435761u + 0x2Fu, kEyeCount));
-    dartOn_[eye] = true;
-    dartPhaseStartMs_[eye] = nowMs - kAgitationDartOnMaxMs / 2;
-    dartPhaseEndMs_[eye] = dartPhaseStartMs_[eye] + kAgitationDartOnMaxMs;
-  }
 }
 
 void LedEngine::emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange,
@@ -870,25 +711,6 @@ void LedEngine::agitationFrame(uint32_t nowMs, uint16_t *green) {
     }
     return;
   }
-
-  if (agitationKind_ == kAgitationDart) {
-    // Every eye runs its own on/off clock, so the lit set turns over
-    // independently instead of stepping together.
-    advanceDart(nowMs);
-    for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-      if (!dartOn_[eye]) {
-        continue;
-      }
-      const uint32_t elapsed = nowMs - dartPhaseStartMs_[eye];
-      const uint32_t dur = dartPhaseEndMs_[eye] - dartPhaseStartMs_[eye];
-      const uint16_t envelope = dartPulsePermille(elapsed, dur);
-      const uint8_t channel = kEyes[eye].green;
-      green[eye] = saturatePwm(withFlicker(scalePermille(kMaxPwm, envelope),
-                                           channel, flickerStep,
-                                           kAgitationFlickerPwm));
-    }
-    return;
-  }
 }
 
 void LedEngine::advanceSweep(uint32_t nowMs) {
@@ -903,33 +725,6 @@ void LedEngine::advanceSweep(uint32_t nowMs) {
       sweepTraversing_ = true;
       sweepForward_ = !sweepForward_;
       sweepPhaseEndMs_ = sweepPhaseStartMs_ + sweepTraverseMs(seq);
-    }
-  }
-}
-
-// Advances every eye's dart clock to nowMs, flipping eyes between their lit and
-// dark phases. Each phase length is hashed from the phase's own start time, so
-// an eye's pulses are indefinite, unpredictable and independent of its
-// neighbours'. Phase lengths are at least kAgitationDartOnMinMs /
-// kAgitationDartOffMinMs, so the catch-up loop is bounded.
-void LedEngine::advanceDart(uint32_t nowMs) {
-  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    while (nowMs >= dartPhaseEndMs_[eye]) {
-      const uint32_t start = dartPhaseEndMs_[eye];
-      const uint32_t seed =
-          start * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x7Au;
-      dartPhaseStartMs_[eye] = start;
-      if (dartOn_[eye]) {
-        dartOn_[eye] = false;
-        dartPhaseEndMs_[eye] =
-            start + kAgitationDartOffMinMs +
-            hashRange(seed, kAgitationDartOffMaxMs - kAgitationDartOffMinMs);
-      } else {
-        dartOn_[eye] = true;
-        dartPhaseEndMs_[eye] =
-            start + kAgitationDartOnMinMs +
-            hashRange(seed, kAgitationDartOnMaxMs - kAgitationDartOnMinMs);
-      }
     }
   }
 }
@@ -997,103 +792,6 @@ void LedEngine::renderStalker(uint32_t nowMs, bool radarHigh, uint16_t *out) {
   }
 }
 
-void LedEngine::renderBlink(uint32_t nowMs, uint16_t *out) {
-  if (!blinkActive_) {
-    if (nowMs < blinkNextMs_) {
-      return;  // still in the dark gap
-    }
-    blinkStartMs_ = nowMs;
-    blinkActive_ = true;
-    blinkPulses_ =
-        (hashRange(blinkSeq_ * 2654435761u + 0x9E3779B9u, kBlinkDoubleOneIn) == 0)
-            ? 2
-            : 1;
-    uint8_t mask = 0;
-    for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-      const uint32_t seed =
-          blinkSeq_ * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x51u;
-      if (hashRange(seed, 1000) < kBlinkGroupPermille) {
-        mask |= static_cast<uint8_t>(1u << eye);
-      }
-    }
-    if (mask == 0) {  // never a fully dark blink
-      const uint8_t forced = static_cast<uint8_t>(
-          hashRange(blinkSeq_ * 2654435761u + 0xA5u, kEyeCount));
-      mask = static_cast<uint8_t>(1u << forced);
-    }
-    blinkMask_ = mask;
-  }
-
-  const uint32_t period = kBlinkOnMs + kBlinkOffMs;
-  const uint32_t lastOnEnd =
-      static_cast<uint32_t>(blinkPulses_ - 1) * period + kBlinkOnMs;
-  const uint32_t elapsed = nowMs - blinkStartMs_;  // wraparound is intentional
-  if (elapsed >= lastOnEnd) {
-    blinkActive_ = false;
-    blinkNextMs_ = nowMs + kBlinkMinGapMs +
-                   hashRange(blinkSeq_ * 2654435761u + 0x77u,
-                             kBlinkMaxGapMs - kBlinkMinGapMs);
-    ++blinkSeq_;
-    return;
-  }
-  if (elapsed % period >= kBlinkOnMs) {
-    return;  // dark gap inside a double blink
-  }
-
-  const uint32_t flickerStep = nowMs / kBlinkFlickerStepMs;
-  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    if (((blinkMask_ >> eye) & 1u) == 0) {
-      continue;
-    }
-    const EyeWiring &w = kEyes[eye];
-    const uint8_t channels[kLedsPerEye] = {w.orange, w.red, w.green};
-    // One pseudo-random colour per eye per blink, sputtering on the way.
-    const uint8_t pick = static_cast<uint8_t>(hashRange(
-        blinkSeq_ * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x33u,
-        kLedsPerEye));
-    const uint8_t channel = channels[pick];
-    out[channel] = saturatePwm(
-        withFlicker(kBlinkLevelPwm, channel, flickerStep, kBlinkFlickerPwm));
-  }
-}
-
-void LedEngine::renderHeartbeat(uint32_t nowMs, bool radarHigh, uint16_t *out) {
-  const uint32_t dt = nowMs - heartbeatLastTickMs_;  // wraparound is intentional
-  heartbeatLastTickMs_ = nowMs;
-  agitation_ = rampToward(agitation_, dt,
-                          radarHigh ? kHeartbeatEscalateMs : kHeartbeatCoolMs,
-                          radarHigh);
-  const uint16_t agitation = permilleOf(agitation_);
-
-  const uint32_t period = static_cast<uint32_t>(lerpPermille(
-      static_cast<int32_t>(kHeartbeatCalmPeriodMs),
-      static_cast<int32_t>(kHeartbeatFastPeriodMs), agitation));
-  if (period != beatPeriodMs_) {
-    beatPhaseMs_ = static_cast<uint32_t>(
-        static_cast<uint64_t>(beatPhaseMs_) * period / beatPeriodMs_);
-    beatPeriodMs_ = period;
-  }
-  beatPhaseMs_ = (beatPhaseMs_ + dt) % period;
-
-  const int32_t beat = scalePermille(kMaxPwm, thumpEnergyPermille(beatPhaseMs_));
-  const int32_t red = scalePermille(beat, agitation);
-  const int32_t green = scalePermille(
-      scalePermille(beat, static_cast<uint16_t>(1000 - agitation)),
-      kHeartbeatGreenPermille);
-  const int32_t orange = scalePermille(red, kHeartbeatOrangePermille);
-  const uint32_t flickerStep = nowMs / kHeartbeatFlickerStepMs;
-
-  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    const EyeWiring &w = kEyes[eye];
-    out[w.red] = saturatePwm(
-        withFlicker(red, w.red, flickerStep, kHeartbeatFlickerPwm));
-    out[w.green] = saturatePwm(
-        withFlicker(green, w.green, flickerStep, kHeartbeatFlickerPwm));
-    out[w.orange] = saturatePwm(
-        withFlicker(orange, w.orange, flickerStep, kHeartbeatFlickerPwm));
-  }
-}
-
 void LedEngine::renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
   const uint32_t dt = nowMs - toxicLastTickMs_;  // wraparound is intentional
   toxicLastTickMs_ = nowMs;
@@ -1140,46 +838,6 @@ void LedEngine::renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
     const uint8_t channel = toxicSparkRed_ ? w.red : w.orange;
     out[channel] =
         saturatePwm(withFlicker(spark, channel, flickerStep, sparkAmp));
-  }
-}
-
-void LedEngine::renderHypnotic(uint32_t nowMs, bool radarHigh, uint16_t *out) {
-  const uint32_t dt = nowMs - hypnoLastTickMs_;  // wraparound is intentional
-  hypnoLastTickMs_ = nowMs;
-  const uint32_t stepMs = radarHigh ? kHypnoFastStepMs : kHypnoSlowStepMs;
-  const uint32_t total = kEyeCount * 1000u;
-
-  // Mix the base rate with a triangle wave, so the chase surges and eases
-  // instead of marching at one steady speed.
-  const int32_t surge =
-      trianglePermille(nowMs, kHypnoSurgePeriodMs, kHypnoSurgePermille);
-  const uint32_t rate = static_cast<uint32_t>(1000 + surge);
-  const uint32_t before = hypnoPhase_;
-  const uint32_t advance = static_cast<uint32_t>(
-      static_cast<uint64_t>(dt) * 1000 / stepMs * rate / 1000);
-  hypnoPhase_ = (hypnoPhase_ + advance) % total;
-  if (hypnoPhase_ < before) {
-    ++hypnoCycle_;  // a new lap: reshuffle the colour palette
-  }
-
-  const uint32_t flickerStep = nowMs / kHypnoFlickerStepMs;
-  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-    const uint32_t behind =
-        (hypnoPhase_ + total - static_cast<uint32_t>(eye) * 1000u) % total;
-    if (behind >= kHypnoTailPermille) {
-      continue;
-    }
-    const uint16_t intensity = static_cast<uint16_t>(
-        (kHypnoTailPermille - behind) * 1000 / kHypnoTailPermille);
-    const uint8_t slot = static_cast<uint8_t>(hashRange(
-        static_cast<uint32_t>(eye) * 2654435761u + hypnoCycle_ * 40503u + 0x2Bu,
-        kLedsPerEye));
-    const EyeWiring &w = kEyes[eye];
-    const uint8_t channel =
-        slot == 0 ? w.orange : (slot == 1 ? w.red : w.green);
-    const int32_t level = scalePermille(kHypnoHeadPwm, intensity);
-    out[channel] = saturatePwm(
-        withFlicker(level, channel, flickerStep, kHypnoFlickerPwm));
   }
 }
 

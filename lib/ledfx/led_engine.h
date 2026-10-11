@@ -18,9 +18,8 @@ enum SmolderState : uint8_t {
 enum AgitationKind : uint8_t {
   kAgitationRipple = 0,  // original motion flash: spread, hold, motion-stop fade
   kAgitationSweep = 1,   // bright green eye sweeping left<->right
-  kAgitationDart = 2,    // independent eyes pulsing green on their own clocks
 };
-constexpr uint8_t kAgitationKindCount = 3;
+constexpr uint8_t kAgitationKindCount = 2;
 
 // Pure effect engine. No Arduino/hardware dependency: every state change is
 // driven by the caller-supplied millisecond timestamp and radar level, so it is
@@ -32,9 +31,10 @@ class LedEngine {
   LedEngine();
 
   // Starts `mode` at `nowMs` and selects `channel` for kModeSingleChannel.
-  // Returns false and changes nothing for any mode >= kModeCount and for a
-  // kModeSingleChannel request whose channel is >= kChannelCount; `channel` is
-  // ignored by the other modes. Re-issuing the current mode restarts it.
+  // Returns false and changes nothing for any mode that isValidMode() rejects
+  // (the retired holes 4, 5 and 7 included) and for a kModeSingleChannel
+  // request whose channel is >= kChannelCount; `channel` is ignored by the
+  // other modes. Re-issuing the current mode restarts it.
   bool setMode(uint16_t mode, uint16_t channel, uint32_t nowMs);
 
   uint16_t mode() const { return mode_; }
@@ -44,9 +44,8 @@ class LedEngine {
 
   // Recomputes every channel for time `nowMs`. `radarHigh` is the raw
   // HLK-LD1020 output level; it affects kModeSmolder (sleep/wake machine and
-  // green agitation), kModePulse (cycle speed), kModeStalker (pop),
-  // kModeHeartbeat (agitation), kModeToxic (frantic ramp) and kModeHypnotic
-  // (chase speed); kModeSingleChannel and kModeBlink ignore it. Returns true
+  // green agitation), kModePulse (cycle speed), kModeStalker (pop) and
+  // kModeToxic (frantic ramp); kModeSingleChannel ignores it. Returns true
   // when any channel value changed since the previous tick, i.e. when the frame
   // must be pushed. Until the first setMode() the engine stays all-off and
   // returns false.
@@ -77,19 +76,17 @@ class LedEngine {
   // Renders the asleep state: progressive eyelid closures plus half-open events.
   void renderSmolderAsleep(uint32_t nowMs, uint16_t *out);
   // Renders the agitation animation agitationKind_. Ripple writes the embers
-  // too (they rise as its greens fade); sweep and dart are green only.
+  // too (they rise as its greens fade); sweep is green only.
   void renderSmolderAgitated(uint32_t nowMs, bool radarHigh, uint16_t *out);
   // Renders the kAgitationRipple motion flash: eye-by-eye fade-in, hold at full
   // flicker while the radar sees motion, then a staggered fade-out (the embers
   // rising underneath) once motion stops.
   void renderSmolderRipple(uint32_t nowMs, bool radarHigh, uint16_t *out);
-  // The green level of every eye in the current sweep/dart frame (0 when that
-  // eye is dark), advancing whatever animation phase needs it.
+  // The green level of every eye in the current sweep frame (0 when that eye is
+  // dark), advancing whatever animation phase needs it.
   void agitationFrame(uint32_t nowMs, uint16_t *green);
   // Advances the sweep through its traverse/rest phases up to nowMs.
   void advanceSweep(uint32_t nowMs);
-  // Advances every eye's independent dart on/off clock up to nowMs.
-  void advanceDart(uint32_t nowMs);
   void enterAwake(uint32_t nowMs, bool fromAgitation);
   // Parks in the awake state with no hand-back animation, for a ripple that has
   // already faded its greens back into the embers.
@@ -101,23 +98,10 @@ class LedEngine {
   // radar level ramps every eye to the stuttering bright red pop.
   void renderStalker(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
-  // kModeBlink: lights a random group of eyes in single random colours for a
-  // sputtering burst, occasionally a double blink, then darkness until the next
-  // hashed interval.
-  void renderBlink(uint32_t nowMs, uint16_t *out);
-
-  // kModeHeartbeat: a flickery lub-dub pulse; calm beats are green, agitated
-  // beats red, and motion both raises agitation and shortens the beat.
-  void renderHeartbeat(uint32_t nowMs, bool radarHigh, uint16_t *out);
-
   // kModeToxic: dim green bubbling base with an isolated spark that is orange or
   // red (random per revolution); motion speeds the spark up and makes the
   // flicker frantic.
   void renderToxic(uint32_t nowMs, bool radarHigh, uint16_t *out);
-
-  // kModeHypnotic: a random-coloured chase rotating around the eyes with a
-  // periodically modulated rate and a flicker; the radar speeds it up.
-  void renderHypnotic(uint32_t nowMs, bool radarHigh, uint16_t *out);
 
   uint16_t frame_[kChannelCount];
   uint16_t mode_;
@@ -148,30 +132,14 @@ class LedEngine {
   uint32_t sweepPhaseStartMs_;   // kModeSmolder agitated: current sweep phase origin
   uint32_t sweepPhaseEndMs_;     // kModeSmolder agitated: when the next phase starts
   uint32_t sweepSeq_;            // kModeSmolder: sweep phase counter (seeds lengths)
-  bool dartOn_[kEyeCount];            // kModeSmolder dart: eye is in its lit phase
-  uint32_t dartPhaseStartMs_[kEyeCount];  // dart: origin of the current phase
-  uint32_t dartPhaseEndMs_[kEyeCount];    // dart: when the phase flips
   uint32_t stalkerAlert_;       // kModeStalker: Q16 ramp toward the pop (0..1<<16)
   uint32_t stalkerLastTickMs_;  // kModeStalker: previous tick() timestamp
   uint32_t stalkerStartMs_;     // kModeStalker: scan phase reference
-  bool blinkActive_;            // kModeBlink: a burst is in progress
-  uint32_t blinkStartMs_;       // kModeBlink: start of the current burst
-  uint32_t blinkNextMs_;        // kModeBlink: earliest time the next burst may start
-  uint32_t blinkSeq_;           // kModeBlink: burst counter, seeds the pattern
-  uint8_t blinkPulses_;         // kModeBlink: 1 normal, 2 double
-  uint8_t blinkMask_;           // kModeBlink: bit set = eye is in this burst
-  uint32_t agitation_;          // kModeHeartbeat: Q16 calm(0)..agitated(1<<16)
-  uint32_t beatPhaseMs_;        // kModeHeartbeat: position inside the beat
-  uint32_t beatPeriodMs_;       // kModeHeartbeat: period beatPhaseMs_ is against
-  uint32_t heartbeatLastTickMs_;
   uint32_t toxicMotion_;        // kModeToxic: Q16 idle(0)..frantic(1<<16)
   uint32_t toxicSparkPhase_;    // kModeToxic: spark position, eye-permille units
   uint32_t toxicCycle_;         // kModeToxic: completed spark revolutions
   bool toxicSparkRed_;          // kModeToxic: current revolution rides red
   uint32_t toxicLastTickMs_;
-  uint32_t hypnoPhase_;         // kModeHypnotic: chase position, eye-permille units
-  uint32_t hypnoCycle_;         // kModeHypnotic: completed chase revolutions
-  uint32_t hypnoLastTickMs_;
   bool active_;              // false until the first setMode()
 };
 

@@ -14,9 +14,8 @@ enum Mode : uint16_t {
   // half-opens again) until the nap ends and the eyes open one at a time.
   // Motion pulls the rig into an agitation picked at random: the original
   // eye-by-eye green spread (which holds while motion lasts and fades back into
-  // the embers the moment it stops), a sweeping beam, or darting eyes. The
-  // sweep and dart crossfade back to the embers once the radar has been quiet
-  // briefly.
+  // the embers the moment it stops), or a sweeping beam. The sweep crossfades
+  // back to the embers once the radar has been quiet briefly.
   kModeSmolder = 0,
   // Lights exactly the channel named by ?c=<channel> at full brightness and
   // holds it there; every other channel stays off. Ignores the radar. Used to
@@ -29,27 +28,34 @@ enum Mode : uint16_t {
   // colour; motion ramps every eye to the stuttering bright red pop, then back
   // to scanning when motion stops.
   kModeStalker = 3,
-  // Blink: a random group of eyes flashes in single random colours, sputtering
-  // and occasionally doubling, then darkness until the next hashed interval.
-  // Ignores radar.
-  kModeBlink = 4,
-  // Heartbeat: a flickery lub-dub pulse; beats are green when calm and red as
-  // motion persists, and the beat period shortens with agitation.
-  kModeHeartbeat = 5,
+  // 4 was kModeBlink and 5 was kModeHeartbeat: retired. Mode numbers are the
+  // HTTP contract, so the holes stay - 6 keeps its number.
   // Toxic: dim green bubbling base with an isolated spark that is randomly
   // orange or red; motion makes the spark faster and the flicker frantic.
   kModeToxic = 6,
-  // Hypnotic: a randomly coloured chase rotating around the eyes at a
-  // periodically varying rate; the radar speeds it up.
-  kModeHypnotic = 7,
+  // 7 was kModeHypnotic: retired.
 };
 
+// One past the largest ?m= value parseModeArg() will even consider, used as the
+// parse-time overflow bound. Retired modes leave holes below it, so
+// isValidMode() - not this constant - is the authority on which values are
+// live.
 constexpr uint16_t kModeCount = 8;
+
+// True for the mode numbers that still select an effect. Rejects the retired
+// holes (4, 5 and 7) as well as anything at or above kModeCount. A single
+// return expression keeps this a valid C++11 constexpr (the ESP32 core builds
+// with -std=gnu++11, where a constexpr body cannot be a switch).
+constexpr bool isValidMode(uint16_t mode) {
+  return mode == kModeSmolder || mode == kModeSingleChannel ||
+         mode == kModePulse || mode == kModeStalker || mode == kModeToxic;
+}
 
 // Parses the ?m= value of POST /mode. Accepts a non-empty run of decimal ASCII
 // digits only; "+1", "-1", "0x0", "1 ", "" and anything at or above kModeCount
-// are rejected. Bails out as soon as the accumulator reaches kModeCount, so no
-// overflow is possible for any kModeCount.
+// are rejected, as are the retired holes 4, 5 and 7 (see isValidMode). Bails out
+// as soon as the accumulator reaches kModeCount, so no overflow is possible for
+// any kModeCount.
 inline bool parseModeArg(const char *text, uint16_t &out) {
   if (text == nullptr || *text == '\0') {
     return false;
@@ -63,6 +69,9 @@ inline bool parseModeArg(const char *text, uint16_t &out) {
     if (value >= kModeCount) {
       return false;
     }
+  }
+  if (!isValidMode(static_cast<uint16_t>(value))) {
+    return false;
   }
   out = static_cast<uint16_t>(value);
   return true;

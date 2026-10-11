@@ -89,16 +89,6 @@ uint8_t countWarmEyes(const ledfx::LedEngine &e) {
   return count;
 }
 
-// Brightest green level anywhere on the rig.
-uint16_t maxGreenLevel(const ledfx::LedEngine &e) {
-  uint16_t best = 0;
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    const uint16_t level = greenLevel(e, eye);
-    if (level > best) best = level;
-  }
-  return best;
-}
-
 // Runs agitation episodes forward from `t` until `kind` is picked, and returns
 // the tick that episode started on (0 if it never came up). Leaves the engine
 // inside the episode.
@@ -178,6 +168,7 @@ void testParseAcceptOne(void);
 void testParseAcceptLeadingZeros(void);
 void testParseRejectEmpty(void);
 void testParseRejectOutOfRange(void);
+void testParseRejectRetiredModes(void);
 void testParseRejectLargeValues(void);
 void testParseAcceptNewModes(void);
 void testParseRejectNonDigits(void);
@@ -192,15 +183,13 @@ void testParseChannelRejectWhitespace(void);
 // --- shared cases ---
 
 // /mode's ?m= values are the enum values, so their numbering is a contract.
+// Retired modes leave holes (4, 5 and 7) that are never renumbered.
 static void testModeNumbering() {
   TEST_ASSERT_EQUAL_UINT16(0, ledfx::kModeSmolder);
   TEST_ASSERT_EQUAL_UINT16(1, ledfx::kModeSingleChannel);
   TEST_ASSERT_EQUAL_UINT16(2, ledfx::kModePulse);
   TEST_ASSERT_EQUAL_UINT16(3, ledfx::kModeStalker);
-  TEST_ASSERT_EQUAL_UINT16(4, ledfx::kModeBlink);
-  TEST_ASSERT_EQUAL_UINT16(5, ledfx::kModeHeartbeat);
   TEST_ASSERT_EQUAL_UINT16(6, ledfx::kModeToxic);
-  TEST_ASSERT_EQUAL_UINT16(7, ledfx::kModeHypnotic);
   TEST_ASSERT_EQUAL_UINT16(8, ledfx::kModeCount);
 }
 
@@ -229,6 +218,18 @@ static void testSetModeRejectsLargestValue() {
   TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSingleChannel, engine.mode());
   TEST_ASSERT_TRUE(engine.tick(0, false));
   assertOnlyChannelLit(engine, 7);
+}
+
+// The retired mode numbers are below kModeCount but must be rejected.
+static void testSetModeRejectsRetiredModes() {
+  const uint16_t retired[] = {4, 5, 7};
+  for (uint16_t mode : retired) {
+    TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSingleChannel, 7, 0));
+    TEST_ASSERT_FALSE(engine.setMode(mode, 0, 0));
+    TEST_ASSERT_EQUAL_UINT16(ledfx::kModeSingleChannel, engine.mode());
+    TEST_ASSERT_TRUE(engine.tick(0, false));
+    assertOnlyChannelLit(engine, 7);
+  }
 }
 
 // --- wiring table cases ---
@@ -536,8 +537,10 @@ static void testSmolderStaysAwakeBeforeSleepWindow() {
   TEST_ASSERT_FALSE(anyGreenLit(e));
 }
 
-// Undisturbed, the rig does fall asleep by the deadline, and once every eyelid
-// gesture has run the frame is fully dark.
+// Undisturbed, the rig does fall asleep by the deadline and stays in the nap
+// through the eyelid-gesture spread. The dark frame itself is covered by
+// testSmolderHalfOpensEyesWhileAsleep, which also accounts for the frequent
+// half-opens during a nap.
 static void testSmolderFallsAsleepWhenUndisturbed() {
   ledfx::LedEngine e;
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
@@ -553,7 +556,6 @@ static void testSmolderFallsAsleepWhenUndisturbed() {
     e.tick(t, false);
   }
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, e.smolderState());
-  TEST_ASSERT_FALSE(anyLit(e));
 }
 
 // A nap lasts a random kSmolderSleepMinMs..kSmolderSleepMaxMs and then the
@@ -686,58 +688,55 @@ static void testSmolderMotionWhileAsleepAgitates() {
 
   e.tick(t + 250, true);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
-  // Every kind lights greens; a darting episode fades up from black, so give it
-  // a moment. Ripple additionally lays the embers back under the flash.
+  // Both kinds light greens; give the animation a moment. Ripple additionally
+  // lays the embers back under the flash.
   e.tick(t + 500, true);
   TEST_ASSERT_TRUE(anyGreenLit(e));
 }
 
-// Sweep and dart are green-only and moving: the warm channels never light and
-// the greens keep changing which eyes are on. They hold until the radar has
-// been quiet for kAgitationHoldMs, then crossfade back into the embers.
-static void testSmolderSweepAndDartAreGreenOnlyAndAlive() {
-  const uint8_t kinds[] = {ledfx::kAgitationSweep, ledfx::kAgitationDart};
-  for (uint8_t kind : kinds) {
-    ledfx::LedEngine e;
-    TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
-    uint32_t t = 100000;
-    const uint32_t entry = enterAgitationKind(e, kind, t);
-    TEST_ASSERT_TRUE(entry != 0);
-    bool litEyes[ledfx::kEyeCount] = {};
-    bool sawGreen = false;
-    for (uint32_t u = entry; u <= entry + 2000; u += 20) {
-      e.tick(u, true);
-      TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
-      TEST_ASSERT_FALSE(anyWarmLit(e));
-      if (anyGreenLit(e)) sawGreen = true;
-      for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-        if (greenLevel(e, eye) > 0) {
-          litEyes[eye] = true;
-        }
+// Sweep is green-only and moving: the warm channels never light and the greens
+// keep changing which eyes are on. It holds until the radar has been quiet for
+// kAgitationHoldMs, then crossfades back into the embers.
+static void testSmolderSweepIsGreenOnlyAndAlive() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  uint32_t t = 100000;
+  const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationSweep, t);
+  TEST_ASSERT_TRUE(entry != 0);
+  bool litEyes[ledfx::kEyeCount] = {};
+  bool sawGreen = false;
+  for (uint32_t u = entry; u <= entry + 2000; u += 20) {
+    e.tick(u, true);
+    TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+    TEST_ASSERT_FALSE(anyWarmLit(e));
+    if (anyGreenLit(e)) sawGreen = true;
+    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+      if (greenLevel(e, eye) > 0) {
+        litEyes[eye] = true;
       }
     }
-    uint8_t distinct = 0;
-    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-      if (litEyes[eye]) ++distinct;
-    }
-    TEST_ASSERT_TRUE(distinct >= 2);
-    TEST_ASSERT_TRUE(sawGreen);
-
-    // The shared quiet hold keeps the animation up, then the embers come back.
-    for (uint32_t u = entry + 2000 + 100;
-         u <= entry + 2000 + ledfx::kAgitationHoldMs +
-                  ledfx::kAgitationExitMs + 100;
-         u += 100) {
-      e.tick(u, false);
-    }
-    TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
-    TEST_ASSERT_TRUE(anyWarmLit(e));
-    TEST_ASSERT_FALSE(anyGreenLit(e));
   }
+  uint8_t distinct = 0;
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    if (litEyes[eye]) ++distinct;
+  }
+  TEST_ASSERT_TRUE(distinct >= 2);
+  TEST_ASSERT_TRUE(sawGreen);
+
+  // The shared quiet hold keeps the animation up, then the embers come back.
+  for (uint32_t u = entry + 2000 + 100;
+       u <= entry + 2000 + ledfx::kAgitationHoldMs +
+                ledfx::kAgitationExitMs + 100;
+       u += 100) {
+    e.tick(u, false);
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  TEST_ASSERT_TRUE(anyWarmLit(e));
+  TEST_ASSERT_FALSE(anyGreenLit(e));
 }
 
-// The shared quiet hold keeps a sweep or dart animation up until the radar has
-// been quiet that long.
+// The shared quiet hold keeps a sweep animation up until the radar has been
+// quiet that long.
 static void testSmolderAgitationEndsAfterMotionStops() {
   ledfx::LedEngine e;
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
@@ -762,9 +761,9 @@ static void testSmolderAgitationEndsAfterMotionStops() {
   TEST_ASSERT_FALSE(anyGreenLit(e));
 }
 
-// Handing back from a sweep or dart is a crossfade: the live green frame keeps
-// running while it fades out and the embers rise underneath, never a hard cut
-// from greens to a full-brightness ember frame.
+// Handing back from a sweep is a crossfade: the live green frame keeps running
+// while it fades out and the embers rise underneath, never a hard cut from
+// greens to a full-brightness ember frame.
 static void testSmolderAgitationCrossfadesBackToEmbers() {
   ledfx::LedEngine e;
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
@@ -893,73 +892,6 @@ static void testSmolderSweepCrossesAndRests() {
   TEST_ASSERT_TRUE(brightest - dimmest >= 400);
 }
 
-// Dart gives each eye its own clock: pulse lengths vary widely (some eyes
-// linger, some only flash) and the eyes switch on and off independently, so the
-// face never steps through the same pattern in lockstep.
-static void testSmolderDartEyesPulseIndependently() {
-  ledfx::LedEngine e;
-  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
-  uint32_t t = 100000;
-  const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationDart, t);
-  TEST_ASSERT_TRUE(entry != 0);
-
-  uint32_t run[ledfx::kEyeCount] = {};
-  uint32_t transitions = 0;
-  uint32_t longestRun = 0;
-  uint32_t shortestRun = 0xFFFFFFFFu;
-  uint16_t dimmest = ledfx::kMaxPwm;
-  uint16_t previousFull = 0;
-  bool haveFull = false;
-  bool sawFlicker = false;
-  bool sawOn = false;
-  bool sawOff = false;
-  bool previousOn[ledfx::kEyeCount] = {};
-  for (uint32_t u = entry; u <= entry + 4000; u += 20) {
-    e.tick(u, true);
-    TEST_ASSERT_FALSE(anyWarmLit(e));
-    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-      const bool on = greenLevel(e, eye) > 0;
-      if (on != previousOn[eye]) {
-        ++transitions;
-        previousOn[eye] = on;
-      }
-      if (on) {
-        run[eye] += 20;
-        sawOn = true;
-      } else if (run[eye] != 0) {
-        if (run[eye] > longestRun) longestRun = run[eye];
-        if (run[eye] < shortestRun) shortestRun = run[eye];
-        run[eye] = 0;
-        sawOff = true;
-      }
-    }
-    const uint16_t level = maxGreenLevel(e);
-    if (level > 0 && level < dimmest) dimmest = level;
-    if (level >= ledfx::kMaxPwm - 200) {
-      // Without flicker every full-brightness sample would be exactly kMaxPwm.
-      if (haveFull && level != previousFull) {
-        sawFlicker = true;
-      }
-      previousFull = level;
-      haveFull = true;
-    } else {
-      haveFull = false;
-    }
-  }
-  TEST_ASSERT_TRUE(sawOn);
-  TEST_ASSERT_TRUE(sawOff);
-  // Independent clocks flip the eyes far more often than one shared 450 ms step.
-  TEST_ASSERT_TRUE(transitions >= 20);
-  // Some pulses linger while others are only brief flashes.
-  TEST_ASSERT_TRUE(longestRun >= 400);
-  TEST_ASSERT_TRUE(shortestRun <= 250);
-  TEST_ASSERT_TRUE(longestRun >= shortestRun + 100);
-  // Eyes fade up and down rather than snapping on and off.
-  TEST_ASSERT_TRUE(dimmest < ledfx::kMaxPwm / 2);
-  // A lit eye still flickers while it sits at full brightness.
-  TEST_ASSERT_TRUE(sawFlicker);
-}
-
 // Repeated episodes do not always pick the same animation.
 static void testSmolderAgitationKindsVary() {
   ledfx::LedEngine e;
@@ -1047,148 +979,6 @@ static void testStalkerColourRandomisesPerEye() {
   TEST_ASSERT_TRUE(varied);
 }
 
-// --- kModeBlink cases ---
-
-static void testBlinkIsDeterministicAndBounded() {
-  ledfx::LedEngine a;
-  ledfx::LedEngine b;
-  TEST_ASSERT_TRUE(a.setMode(ledfx::kModeBlink, 0, 0));
-  TEST_ASSERT_TRUE(b.setMode(ledfx::kModeBlink, 0, 0));
-  for (uint32_t t = 0; t <= 20000; t += 37) {
-    a.tick(t, false);
-    b.tick(t, false);
-    for (uint16_t c = 0; c < ledfx::kChannelCount; ++c) {
-      TEST_ASSERT_EQUAL_UINT16(a.frame()[c], b.frame()[c]);
-      TEST_ASSERT_TRUE(a.frame()[c] <= ledfx::kMaxPwm);
-    }
-  }
-}
-
-static void testBlinkLightsWholeLedsInAGroup() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeBlink, 0, 0));
-  TEST_ASSERT_TRUE(engine.tick(0, false));  // first burst starts here
-  uint8_t litEyes = 0;
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    const ledfx::EyeWiring &w = ledfx::kEyes[eye];
-    const uint16_t o = channelLevel(engine, w.orange);
-    const uint16_t r = channelLevel(engine, w.red);
-    const uint16_t g = channelLevel(engine, w.green);
-    if (o > 0 || r > 0 || g > 0) {
-      ++litEyes;
-      // Exactly one colour per eye, near full brightness but sputtering.
-      TEST_ASSERT_EQUAL_UINT8(1, (o > 0) + (r > 0) + (g > 0));
-      const uint16_t level = o > 0 ? o : (r > 0 ? r : g);
-      TEST_ASSERT_TRUE(level >= ledfx::kBlinkLevelPwm - ledfx::kBlinkFlickerPwm);
-      TEST_ASSERT_TRUE(level <= ledfx::kBlinkLevelPwm);
-    }
-  }
-  TEST_ASSERT_TRUE(litEyes >= 1);
-  TEST_ASSERT_TRUE(litEyes <= ledfx::kEyeCount);
-}
-
-// Each blink picks a fresh colour for each blinking eye, so over many blinks an
-// eye is seen in more than one colour.
-static void testBlinkColourRandomisesPerBlink() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeBlink, 0, 0));
-  uint8_t seen[ledfx::kEyeCount] = {};
-  for (uint32_t t = 0; t <= 200000; t += 7) {
-    engine.tick(t, false);
-    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-      const ledfx::EyeWiring &w = ledfx::kEyes[eye];
-      const uint16_t o = channelLevel(engine, w.orange);
-      const uint16_t r = channelLevel(engine, w.red);
-      const uint16_t g = channelLevel(engine, w.green);
-      if ((o > 0) + (r > 0) + (g > 0) == 1) {
-        seen[eye] |= static_cast<uint8_t>(1u << litSlot(engine, eye));
-      }
-    }
-  }
-  bool varied = false;
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    if ((seen[eye] & (seen[eye] - 1u)) != 0) {
-      varied = true;
-    }
-  }
-  TEST_ASSERT_TRUE(varied);
-}
-
-// At kBlinkOnMs the first pulse has ended (single blink) or is in its dark gap
-// (double blink), so the rig is always dark there.
-static void testBlinkGoesDarkAfterTheOnWindow() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeBlink, 0, 0));
-  TEST_ASSERT_TRUE(engine.tick(0, false));
-  TEST_ASSERT_TRUE(engine.tick(ledfx::kBlinkOnMs, false));
-  assertAllOff(engine);
-}
-
-// --- kModeHeartbeat cases ---
-
-static void testHeartbeatLubDubGreenWhenCalm() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeHeartbeat, 0, 0));
-  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeHeartbeat, engine.mode());
-  TEST_ASSERT_FALSE(engine.tick(0, false));
-  assertAllOff(engine);
-  // Lub peak: bright (but trimmed and flickering) green, no red, no orange.
-  const uint16_t greenPeak = static_cast<uint16_t>(
-      static_cast<uint32_t>(ledfx::kMaxPwm) * ledfx::kHeartbeatGreenPermille /
-      1000);
-  engine.tick(ledfx::kHeartbeatThumpMs / 2, false);
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    const ledfx::EyeWiring &w = ledfx::kEyes[eye];
-    const uint16_t green = channelLevel(engine, w.green);
-    TEST_ASSERT_TRUE(green >= greenPeak - ledfx::kHeartbeatFlickerPwm);
-    TEST_ASSERT_TRUE(green <= greenPeak + ledfx::kHeartbeatFlickerPwm);
-    TEST_ASSERT_TRUE(green < ledfx::kMaxPwm);  // green is trimmed
-    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, w.red));
-    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, w.orange));
-  }
-  // Dub peak arrives kHeartbeatDubDelayMs later: the softer second thump
-  // (kHeartbeatDubGainPermille of the lub), still pure green at rest.
-  engine.tick(ledfx::kHeartbeatDubDelayMs + ledfx::kHeartbeatThumpMs / 2, false);
-  const uint16_t dub = channelLevel(engine, ledfx::kEyes[0].green);
-  TEST_ASSERT_TRUE(dub > 0);
-  TEST_ASSERT_TRUE(dub < greenPeak);
-  TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, ledfx::kEyes[0].red));
-  TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, ledfx::kEyes[0].orange));
-}
-
-static void testHeartbeatEscalatesToRedAndSpeedsUp() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeHeartbeat, 0, 0));
-  engine.tick(0, false);
-  engine.tick(ledfx::kHeartbeatEscalateMs, true);  // full agitation
-  bool sawRed = false;
-  uint32_t t = ledfx::kHeartbeatEscalateMs;
-  for (uint32_t i = 0; i <= ledfx::kHeartbeatFastPeriodMs; i += 5) {
-    t += 5;
-    engine.tick(t, true);
-    const uint16_t red = channelLevel(engine, ledfx::kEyes[0].red);
-    if (red == ledfx::kMaxPwm) {
-      sawRed = true;
-      TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, ledfx::kEyes[0].green));
-    }
-  }
-  TEST_ASSERT_TRUE(sawRed);
-}
-
-static void testHeartbeatCoolsBackToGreen() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeHeartbeat, 0, 0));
-  engine.tick(0, false);
-  engine.tick(ledfx::kHeartbeatEscalateMs, true);  // fully agitated
-  uint32_t t = ledfx::kHeartbeatEscalateMs + ledfx::kHeartbeatCoolMs;
-  engine.tick(t, false);  // agitated to the floor
-  bool sawGreenOnly = false;
-  for (uint32_t i = 0; i <= ledfx::kHeartbeatCalmPeriodMs; i += 5) {
-    t += 5;
-    engine.tick(t, false);
-    const uint16_t green = channelLevel(engine, ledfx::kEyes[0].green);
-    if (green > 0) {
-      sawGreenOnly = true;
-      TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, ledfx::kEyes[0].red));
-    }
-  }
-  TEST_ASSERT_TRUE(sawGreenOnly);
-}
-
 // --- kModeToxic cases ---
 
 static void testToxicKeepsGreenBase() {
@@ -1254,105 +1044,13 @@ static void testToxicSparkColourRandomises() {
   TEST_ASSERT_TRUE(sawRed);
 }
 
-// --- kModeHypnotic cases ---
-
-static void testHypnoticChaseRotatesOneColourPerEye() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeHypnotic, 0, 0));
-  TEST_ASSERT_EQUAL_UINT16(ledfx::kModeHypnotic, engine.mode());
-  TEST_ASSERT_TRUE(engine.tick(0, false));
-  // Head on eye 0 at full, in a single colour.
-  TEST_ASSERT_EQUAL_UINT8(0, brightestEye(engine));
-  const ledfx::EyeWiring &w0 = ledfx::kEyes[0];
-  const uint16_t o0 = channelLevel(engine, w0.orange);
-  const uint16_t r0 = channelLevel(engine, w0.red);
-  const uint16_t g0 = channelLevel(engine, w0.green);
-  TEST_ASSERT_EQUAL_UINT8(1, (o0 > 0) + (r0 > 0) + (g0 > 0));
-  const uint16_t head0 = o0 > 0 ? o0 : (r0 > 0 ? r0 : g0);
-  TEST_ASSERT_TRUE(head0 >= ledfx::kHypnoHeadPwm - ledfx::kHypnoFlickerPwm);
-
-  // Over a full revolution every eye takes its turn as the head, and no eye
-  // ever shows more than one colour.
-  bool seen[ledfx::kEyeCount] = {};
-  uint32_t t = 0;
-  for (uint32_t i = 0; i < 2500; ++i) {
-    t += 20;
-    engine.tick(t, false);
-    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-      const ledfx::EyeWiring &w = ledfx::kEyes[eye];
-      const uint16_t o = channelLevel(engine, w.orange);
-      const uint16_t r = channelLevel(engine, w.red);
-      const uint16_t g = channelLevel(engine, w.green);
-      TEST_ASSERT_TRUE((o > 0) + (r > 0) + (g > 0) <= 1);
-    }
-    seen[brightestEye(engine)] = true;
-  }
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    TEST_ASSERT_TRUE(seen[eye]);
-  }
-}
-
-// The palette is reshuffled each revolution, so an eye seen as the head in
-// different laps is not always the same colour.
-static void testHypnoticColoursRandomiseOverTime() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeHypnotic, 0, 0));
-  uint8_t seen[ledfx::kEyeCount] = {};
-  for (uint32_t t = 0; t <= 60000; t += 11) {
-    engine.tick(t, false);
-    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-      const ledfx::EyeWiring &w = ledfx::kEyes[eye];
-      const uint16_t o = channelLevel(engine, w.orange);
-      const uint16_t r = channelLevel(engine, w.red);
-      const uint16_t g = channelLevel(engine, w.green);
-      if ((o > 0) + (r > 0) + (g > 0) == 1) {
-        seen[eye] |= static_cast<uint8_t>(1u << litSlot(engine, eye));
-      }
-    }
-  }
-  bool varied = false;
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    if ((seen[eye] & (seen[eye] - 1u)) != 0) {
-      varied = true;
-    }
-  }
-  TEST_ASSERT_TRUE(varied);
-}
-
-static void testHypnoticRadarSpeedsTheChase() {
-  ledfx::LedEngine slow;
-  ledfx::LedEngine fast;
-  TEST_ASSERT_TRUE(slow.setMode(ledfx::kModeHypnotic, 0, 0));
-  TEST_ASSERT_TRUE(fast.setMode(ledfx::kModeHypnotic, 0, 0));
-  slow.tick(0, false);
-  fast.tick(0, false);
-  uint8_t lastSlow = brightestEye(slow);
-  uint8_t lastFast = brightestEye(fast);
-  uint32_t slowSteps = 0;
-  uint32_t fastSteps = 0;
-  uint32_t t = 0;
-  for (uint32_t i = 0; i < 200; ++i) {
-    t += 25;
-    slow.tick(t, false);
-    fast.tick(t, true);
-    const uint8_t s = brightestEye(slow);
-    const uint8_t f = brightestEye(fast);
-    if (s != lastSlow) {
-      ++slowSteps;
-      lastSlow = s;
-    }
-    if (f != lastFast) {
-      ++fastSteps;
-      lastFast = f;
-    }
-  }
-  TEST_ASSERT_TRUE(fastSteps > slowSteps);
-}
-
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(testModeNumbering);
   RUN_TEST(testFreshEngineIsBlank);
   RUN_TEST(testSetModeRejectsUnknownMode);
   RUN_TEST(testSetModeRejectsLargestValue);
+  RUN_TEST(testSetModeRejectsRetiredModes);
   RUN_TEST(testEyeWiringIsCompleteAndUnique);
   RUN_TEST(testPulseStartsQuietAndRunsForever);
   RUN_TEST(testPulseSlowPeakAndTrough);
@@ -1379,35 +1077,25 @@ int main(void) {
   RUN_TEST(testSmolderWakesEyeByEye);
   RUN_TEST(testSmolderHalfOpensEyesWhileAsleep);
   RUN_TEST(testSmolderMotionWhileAsleepAgitates);
-  RUN_TEST(testSmolderSweepAndDartAreGreenOnlyAndAlive);
+  RUN_TEST(testSmolderSweepIsGreenOnlyAndAlive);
   RUN_TEST(testSmolderAgitationEndsAfterMotionStops);
   RUN_TEST(testSmolderAgitationCrossfadesBackToEmbers);
   RUN_TEST(testSmolderRippleSpreadsHoldsAndFadesOut);
   RUN_TEST(testSmolderSweepCrossesAndRests);
-  RUN_TEST(testSmolderDartEyesPulseIndependently);
   RUN_TEST(testSmolderAgitationKindsVary);
   RUN_TEST(testStalkerScansDimThenPopsRed);
   RUN_TEST(testStalkerReleaseReturnsToScan);
   RUN_TEST(testStalkerColourRandomisesPerEye);
-  RUN_TEST(testBlinkIsDeterministicAndBounded);
-  RUN_TEST(testBlinkLightsWholeLedsInAGroup);
-  RUN_TEST(testBlinkColourRandomisesPerBlink);
-  RUN_TEST(testBlinkGoesDarkAfterTheOnWindow);
-  RUN_TEST(testHeartbeatLubDubGreenWhenCalm);
-  RUN_TEST(testHeartbeatEscalatesToRedAndSpeedsUp);
-  RUN_TEST(testHeartbeatCoolsBackToGreen);
   RUN_TEST(testToxicKeepsGreenBase);
   RUN_TEST(testToxicSparkTravels);
   RUN_TEST(testToxicMotionSpeedsSpark);
   RUN_TEST(testToxicSparkColourRandomises);
-  RUN_TEST(testHypnoticChaseRotatesOneColourPerEye);
-  RUN_TEST(testHypnoticColoursRandomiseOverTime);
-  RUN_TEST(testHypnoticRadarSpeedsTheChase);
   RUN_TEST(testParseAcceptZero);
   RUN_TEST(testParseAcceptOne);
   RUN_TEST(testParseAcceptLeadingZeros);
   RUN_TEST(testParseRejectEmpty);
   RUN_TEST(testParseRejectOutOfRange);
+  RUN_TEST(testParseRejectRetiredModes);
   RUN_TEST(testParseRejectLargeValues);
   RUN_TEST(testParseAcceptNewModes);
   RUN_TEST(testParseRejectNonDigits);

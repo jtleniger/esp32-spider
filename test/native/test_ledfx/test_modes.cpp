@@ -49,6 +49,14 @@ void testParseRejectOutOfRange() {
   assertRejected("9");
 }
 
+// Modes 4 (blink), 5 (heartbeat) and 7 (hypnotic) were retired: their numbers
+// are below kModeCount but must not select anything.
+void testParseRejectRetiredModes() {
+  assertRejected("4");
+  assertRejected("5");
+  assertRejected("7");
+}
+
 void testParseRejectLargeValues() {
   assertRejected("8");
   assertRejected("65536");
@@ -59,8 +67,8 @@ void testParseAcceptNewModes() {
   uint16_t out = 0xFFFF;
   TEST_ASSERT_TRUE(ledfx::parseModeArg("3", out));
   TEST_ASSERT_EQUAL_UINT16(3, out);
-  TEST_ASSERT_TRUE(ledfx::parseModeArg("7", out));  // kModeCount - 1
-  TEST_ASSERT_EQUAL_UINT16(7, out);
+  TEST_ASSERT_TRUE(ledfx::parseModeArg("6", out));  // the highest live mode
+  TEST_ASSERT_EQUAL_UINT16(6, out);
 }
 
 void testParseRejectNonDigits() {
