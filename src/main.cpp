@@ -74,6 +74,12 @@ void handleMode() {
 // blacked out the rig (engine, radar, HTTP) for the whole timeout on every
 // power cycle where the AP was absent or slow. Connection state is polled and
 // retried from maintainWifi() instead.
+//
+// Must still run before WebServer::begin(): WiFi.mode() is what triggers
+// esp_netif_init()/tcpip_init() (WiFiGeneric.cpp wifiLowLevelInit), and
+// WiFiServer::begin() creates a lwip socket immediately, which panics with
+// "tcpip_send_msg_wait_sem (Invalid mbox)" when the tcpip thread does not
+// exist yet. Only the connect wait is safe to drop, not the ordering.
 void beginWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -118,16 +124,17 @@ void setup() {
   }
   pushFrame();  // all channels off as soon as the driver is up
 
+  // Order matters: this is what initializes the netif/tcpip stack that
+  // WebServer::begin() needs, but it no longer waits for the AP, so the rig
+  // animates on every power cycle even when the AP is missing.
+  beginWifi();
+
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/mode", HTTP_POST, handleMode);
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
 
   engine.setMode(ledfx::kModeSmolder, 0, millis());  // embers, then sleep, green agitation on motion
-
-  // Last, and without waiting: the rig must animate on every power cycle even
-  // when the AP is missing.
-  beginWifi();
 }
 
 void loop() {
