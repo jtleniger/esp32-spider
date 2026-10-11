@@ -852,8 +852,8 @@ static void testSmolderSweepCrossesAndRests() {
   const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationSweep, t);
   TEST_ASSERT_TRUE(entry != 0);
 
-  // One forward traverse takes a random 1..3 s (the head only lights the far eye
-  // once it has actually arrived).
+  // One forward traverse takes a random 0.25..1 s (the head only lights the far
+  // eye once it has actually arrived).
   uint32_t atRight = 0;
   for (uint32_t u = entry;
        u <= entry + ledfx::kAgitationSweepMaxMs + 500 && atRight == 0; u += 25) {
@@ -867,7 +867,7 @@ static void testSmolderSweepCrossesAndRests() {
   TEST_ASSERT_TRUE(traverse >= ledfx::kAgitationSweepMinMs);
   TEST_ASSERT_TRUE(traverse <= ledfx::kAgitationSweepMaxMs + 25);
 
-  // Then it rests on that eye for a random 2..5 s. The measurement starts a
+  // Then it rests on that eye for a random 0.5..2 s. The measurement starts a
   // little late: the head has to move clear before another eye outshines it.
   const uint8_t head = ledfx::kEyes[ledfx::kEyeCount - 1].green;
   uint16_t dimmest = ledfx::kMaxPwm;

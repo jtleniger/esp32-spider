@@ -141,12 +141,14 @@ constexpr uint32_t kAgitationFlickerStepMs = 43;  // shared flicker refresh
 // Sweep: the head runs from one end of the face to the other in a random
 // kAgitationSweepMinMs..kAgitationSweepMaxMs, then rests on that end eye for a
 // random kAgitationSweepPauseMinMs..kAgitationSweepPauseMaxMs before sweeping
-// back; a trailing glow follows behind the head.
-constexpr uint32_t kAgitationSweepMinMs = 1000;
-constexpr uint32_t kAgitationSweepMaxMs = 3000;
-constexpr uint32_t kAgitationSweepPauseMinMs = 2000;
-constexpr uint32_t kAgitationSweepPauseMaxMs = 5000;
-constexpr uint16_t kAgitationSweepTailPermille = 1500;  // 1.5-eye trail
+// back. A long trailing glow follows behind the head, its brightness falling
+// off quadratically rather than linearly, so several dimming eyes trail the
+// lead instead of the head moving as a lone bright point.
+constexpr uint32_t kAgitationSweepMinMs = 250;
+constexpr uint32_t kAgitationSweepMaxMs = 1000;
+constexpr uint32_t kAgitationSweepPauseMinMs = 500;
+constexpr uint32_t kAgitationSweepPauseMaxMs = 2000;
+constexpr uint16_t kAgitationSweepTailPermille = 3500;  // 3.5-eye trail
 // Dart: every eye runs its own on/off clock, so the lit set never steps in
 // lockstep. An eye fades up, holds at a flicker for a random
 // kAgitationDartOnMinMs..kAgitationDartOnMaxMs (brief flashes and long

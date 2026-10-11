@@ -857,9 +857,12 @@ void LedEngine::agitationFrame(uint32_t nowMs, uint16_t *green) {
       if (behind < 0 || behind >= tail) {
         continue;
       }
+      // Quadratic falloff: the head stays bright and the eyes behind it dim
+      // away smoothly into the tail instead of all sharing a linear ramp.
+      const int32_t remaining = tail - behind;
       const uint16_t intensity = static_cast<uint16_t>(
-          (kAgitationSweepTailPermille - behind) * 1000 /
-          kAgitationSweepTailPermille);
+          static_cast<uint64_t>(remaining) * remaining * 1000 /
+          (static_cast<uint32_t>(kAgitationSweepTailPermille) * kAgitationSweepTailPermille));
       const uint8_t channel = kEyes[eye].green;
       green[eye] = saturatePwm(withFlicker(scalePermille(kMaxPwm, intensity),
                                            channel, flickerStep,
