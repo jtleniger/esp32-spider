@@ -1,5 +1,6 @@
 #include <Adafruit_TLC5947.h>
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
@@ -7,6 +8,7 @@
 #include <led_engine.h>
 #include <led_layout.h>
 #include <modes.h>
+#include <tuning.h>
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -19,10 +21,20 @@ namespace {
 constexpr uint16_t kHttpPort = 80;
 constexpr uint32_t kWifiRetryIntervalMs = 5000;
 
+// Persisted tuning overrides (POST /config). One blob under one key: the field
+// table in tuning.h is a struct layout, so the version is bumped whenever the
+// layout or a default changes and a blob from an older build is discarded
+// rather than reinterpreted. The length check catches a truncated write.
+constexpr const char *kNvsNamespace = "ledfx";
+constexpr const char *kNvsTuningKey = "tuning";
+constexpr const char *kNvsVersionKey = "version";
+constexpr uint32_t kTuningVersion = 1;
+
 Adafruit_TLC5947 tlc(ledfx::kTlcDriverCount, ledfx::kTlcClockPin, ledfx::kTlcDataPin,
                      ledfx::kTlcLatchPin);
 ledfx::LedEngine engine;
 WebServer server(kHttpPort);
+Preferences preferences;
 
 // One write per changed frame; the driver bit-bangs 24 x 12 bits per call.
 void pushFrame() {
@@ -73,6 +85,111 @@ void handleMode() {
   }
   engine.tick(millis(), radarActive());  // blank/park the frame at the new start
   pushFrame();
+  server.send(200, "text/plain", "ok\n");
+}
+
+// Restores the overrides saved by POST /config. Anything that no longer fits
+// the field table - a stored blob whose version or length predates a firmware
+// change, or a value a range change made illegal - falls back to the built-in
+// defaults, so a stale blob can never put the engine into an invalid state.
+void loadTuning() {
+  if (!preferences.begin(kNvsNamespace, false)) {
+    Serial.println("tuning: NVS unavailable, using defaults");
+    return;
+  }
+  const bool stored =
+      preferences.getUInt(kNvsVersionKey, 0) == kTuningVersion &&
+      preferences.getBytesLength(kNvsTuningKey) == sizeof(ledfx::Tuning);
+  if (!stored) {
+    Serial.println("tuning: no stored overrides, using defaults");
+    return;
+  }
+  ledfx::Tuning saved;
+  preferences.getBytes(kNvsTuningKey, &saved, sizeof(saved));
+  ledfx::clampTuning(saved);
+  const char *offender = nullptr;
+  if (!ledfx::validateTuning(saved, &offender)) {
+    Serial.printf("tuning: stored overrides rejected (%s), using defaults\n",
+                  offender != nullptr ? offender : "out of range");
+    return;
+  }
+  engine.tuning() = saved;
+  Serial.println("tuning: restored stored overrides");
+}
+
+void saveTuning() {
+  preferences.putBytes(kNvsTuningKey, &engine.tuning(), sizeof(ledfx::Tuning));
+  preferences.putUInt(kNvsVersionKey, kTuningVersion);
+}
+
+void sendConfigError(const char *reason, const char *field) {
+  server.send(400, "text/plain",
+              String(reason) + ": " + (field != nullptr ? field : "?") + "\n");
+}
+
+// GET /config dumps the whole tuning table as JSON, under the names POST
+// /config takes, so it doubles as the list of knobs and their current values.
+// Static: the body is over 1.5 KB and the handler runs on the loop task's stack.
+void handleConfigGet() {
+  static char body[ledfx::kTuningBodyCapacity];
+  ledfx::formatTuning(body, sizeof(body), engine.tuning());
+  server.send(200, "application/json", body);
+}
+
+// POST /config?<field>=<value>&... applies every query argument as a tuning
+// field, e.g. POST /config?smolder_dwell_ms=5000&smolder_flicker_pwm=0.
+// All or nothing: one unknown name, out-of-range value or inconsistent
+// combination rejects the whole request, so a tuning session can never leave a
+// half-applied state behind. What is accepted is written to NVS, because the
+// rig is power-cycled daily and a knob that only lived in RAM would be gone.
+void handleConfigPost() {
+  constexpr size_t kMaxEdits = 16;
+  const size_t count = static_cast<size_t>(server.args());
+  if (count == 0) {
+    server.send(400, "text/plain", "no tuning fields\n");
+    return;
+  }
+  if (count > kMaxEdits) {
+    server.send(400, "text/plain", "too many tuning fields\n");
+    return;
+  }
+  // argName()/arg() hand back String temporaries, so keep the copies alive for
+  // as long as the edits point into them.
+  String names[kMaxEdits];
+  String values[kMaxEdits];
+  ledfx::TuningEdit edits[kMaxEdits];
+  for (size_t i = 0; i < count; ++i) {
+    names[i] = server.argName(i);
+    values[i] = server.arg(i);
+    edits[i] = {names[i].c_str(), values[i].c_str()};
+  }
+
+  ledfx::Tuning next = engine.tuning();
+  const char *offender = nullptr;
+  switch (ledfx::applyTuningEdits(next, edits, count, &offender)) {
+    case ledfx::TuningResult::kOk:
+      break;
+    case ledfx::TuningResult::kUnknownField:
+      sendConfigError("unknown tuning field", offender);
+      return;
+    case ledfx::TuningResult::kOutOfRange:
+      sendConfigError("value out of range", offender);
+      return;
+    case ledfx::TuningResult::kInconsistent:
+      sendConfigError("inconsistent with another field", offender);
+      return;
+  }
+  engine.tuning() = next;
+  saveTuning();
+  server.send(200, "text/plain", "ok\n");
+}
+
+// POST /config/reset drops the stored overrides and returns to the built-in
+// defaults, so a knob set badly over HTTP is recoverable without reflashing.
+void handleConfigReset() {
+  engine.tuning() = ledfx::Tuning{};
+  preferences.remove(kNvsTuningKey);
+  preferences.remove(kNvsVersionKey);
   server.send(200, "text/plain", "ok\n");
 }
 
@@ -137,8 +254,15 @@ void setup() {
   // animates on every power cycle even when the AP is missing.
   beginWifi();
 
+  // Before the first setMode/tick, so the rig boots straight into the saved
+  // tuning instead of flashing its defaults for a frame.
+  loadTuning();
+
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/mode", HTTP_POST, handleMode);
+  server.on("/config", HTTP_GET, handleConfigGet);
+  server.on("/config", HTTP_POST, handleConfigPost);
+  server.on("/config/reset", HTTP_POST, handleConfigReset);
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
 

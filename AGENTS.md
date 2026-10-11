@@ -14,11 +14,12 @@ pio run -e esp32dev  # compile (first run downloads ~1 GB)
 
 ## Layout
 
-`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels; `health.h` builds the `GET /health` body (`{"mode":M,"uptime_s":U}`, JSON because the endpoint keeps gaining fields). `src/main.cpp` is ESP32-only glue (WiFi, `WebServer`, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring; git-ignored `include/secrets.h` holds WiFi credentials.
+`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels; `health.h` builds the `GET /health` body (`{"mode":M,"uptime_s":U}`, JSON because the endpoint keeps gaining fields); `tuning.h` is the knob table behind `POST /config`. `src/main.cpp` is ESP32-only glue (WiFi, `WebServer`, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring; git-ignored `include/secrets.h` holds WiFi credentials.
 
 ## Why the code is shaped this way
 
 - **Nothing in `lib/` includes Arduino**; logic is driven by `tick(nowMs, radarHigh)`. That separation makes behaviour testable in this container, and `loop()` must never `delay()` so HTTP serving coexists.
+- **Tuning knobs are runtime state**: `led_layout.h` still owns the defaults, but the engine reads `ledfx::Tuning` (`tuning.h`), so `POST /config?<knob>=<value>` overrides a knob live and Preferences persists it (`POST /config/reset` drops the blob). Each knob's HTTP name, member and accepted range are one table row; the ranges are load-bearing, because the engine subtracts the min/max pairs into random spans and divides by the step knobs, so `validateTuning()` rejects an inverted pair instead of letting the engine divide by zero. Adding a knob means a `Tuning` field (defaulted to the constexpr), a table row, and swapping the engine's use of the constant - nothing else.
 - **`tick` returns true only when a channel changed**, and `main.cpp` pushes a TLC5947 frame only then - the driver bit-bangs 24x12 bits per write, so never push unconditionally.
 - **Mode numbers are the HTTP contract**: a new effect gets an enumerator with an explicit value, a `tick` branch and an `isValidMode()` case; never renumber or reuse a retired mode's number (4, 5 and 7 are dead holes left by removed effects). `kModeCount` is only the parser's numeric bound, not the live-mode count.
 - **No heap use in `lib/ledfx`**; the smolder flicker hashes integers instead of `rand()` so the engine stays deterministic for host assertions.

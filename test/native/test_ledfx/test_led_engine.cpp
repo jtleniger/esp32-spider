@@ -186,6 +186,18 @@ void testHealthUptimeIsWholeSeconds(void);
 void testHealthBodyFitsExtremeValues(void);
 void testHealthBodyRejectsTinyBuffer(void);
 
+// --- tuning table / POST /config cases, implemented in test_tuning.cpp ---
+void testTuningDefaultsAreValid(void);
+void testTuningTableIsWellFormed(void);
+void testTuningEveryFieldEditsOnlyItself(void);
+void testTuningRejectsUnknownField(void);
+void testTuningRejectsBadValues(void);
+void testTuningRejectsInconsistent(void);
+void testTuningMultiEditIsAtomic(void);
+void testTuningClampPullsValuesIntoRange(void);
+void testTuningFormatListsEveryField(void);
+void testEngineFollowsEditedTuning(void);
+
 // --- shared cases ---
 
 // /mode's ?m= values are the enum values, so their numbering is a contract.
@@ -1116,5 +1128,15 @@ int main(void) {
   RUN_TEST(testHealthUptimeIsWholeSeconds);
   RUN_TEST(testHealthBodyFitsExtremeValues);
   RUN_TEST(testHealthBodyRejectsTinyBuffer);
+  RUN_TEST(testTuningDefaultsAreValid);
+  RUN_TEST(testTuningTableIsWellFormed);
+  RUN_TEST(testTuningEveryFieldEditsOnlyItself);
+  RUN_TEST(testTuningRejectsUnknownField);
+  RUN_TEST(testTuningRejectsBadValues);
+  RUN_TEST(testTuningRejectsInconsistent);
+  RUN_TEST(testTuningMultiEditIsAtomic);
+  RUN_TEST(testTuningClampPullsValuesIntoRange);
+  RUN_TEST(testTuningFormatListsEveryField);
+  RUN_TEST(testEngineFollowsEditedTuning);
   return UNITY_END();
 }
