@@ -1,6 +1,7 @@
 #include <Adafruit_TLC5947.h>
 #include <Arduino.h>
 #include <ESPmDNS.h>
+#include <LittleFS.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -8,6 +9,7 @@
 #include <health.h>
 #include <led_engine.h>
 #include <led_layout.h>
+#include <logs.h>
 #include <modes.h>
 #include <tuning.h>
 
@@ -35,6 +37,17 @@ constexpr const char *kNtpServer = "pool.ntp.org";
 constexpr long kNtpGmtOffsetSec = 0;
 constexpr int kNtpDaylightOffsetSec = 0;
 
+// Motion log: one file per boot in this directory on the LittleFS data
+// partition (the default table's "spiffs" partition, formatted as LittleFS on
+// first use), one line per radar activation.
+constexpr const char *kLogDir = "/logs";
+
+// Activations are queued while the clock is still the 1970 default - there is
+// no boot stamp to name the file with until SNTP lands - and written with their
+// real stamps once it does. Bounded, because a rig that never reaches a server
+// would otherwise queue forever: the newest win.
+constexpr size_t kMaxPendingEvents = 32;
+
 // Persisted tuning overrides (POST /config). One blob under one key: the field
 // table in tuning.h is a struct layout, so the version is bumped whenever the
 // layout or a default changes and a blob from an older build is discarded
@@ -49,6 +62,21 @@ Adafruit_TLC5947 tlc(ledfx::kTlcDriverCount, ledfx::kTlcClockPin, ledfx::kTlcDat
 ledfx::LedEngine engine;
 WebServer server(kHttpPort);
 Preferences preferences;
+
+// Motion log state. `bootLog` stays open for the session (appends are then a
+// write and a flush rather than a mount lookup per activation) and bootLogName
+// is empty until the clock is real enough to name the file.
+bool logsReady = false;
+File bootLog;
+char bootLogName[ledfx::kLogNameCapacity] = {};
+uint32_t pendingEventsMs[kMaxPendingEvents] = {};
+size_t pendingCount = 0;
+bool logWriteFailed = false;  // partition full: say it once, not per activation
+bool radarWasActive = false;  // rising-edge detection for the activation lines
+
+// Defined with the rest of the motion log below; /health reports both.
+size_t logFileCount();
+uint32_t freeBytes();
 
 // One write per changed frame; the driver bit-bangs 24 x 12 bits per call.
 void pushFrame() {
@@ -85,6 +113,8 @@ void handleHealth() {
   status.mode = engine.mode();
   status.uptimeMs = millis();
   status.epochSeconds = epochSeconds();
+  status.logFiles = static_cast<uint32_t>(logFileCount());
+  status.freeBytes = freeBytes();
   char body[ledfx::kHealthBodyCapacity];
   ledfx::formatHealth(body, sizeof(body), status);
   server.send(200, "application/json", body);
@@ -220,6 +250,228 @@ void handleConfigReset() {
   server.send(200, "text/plain", "ok\n");
 }
 
+// --- motion log (LittleFS) ---
+// One file per boot, named for the boot stamp, one line per radar activation.
+// The bytes and the name validation are in lib/ledfx/logs.h; this is the
+// storage and the HTTP surface.
+
+// Mounts the data partition and makes sure the log directory exists.
+// formatOnFail, because a freshly flashed board has an unformatted data
+// partition and the logs are the only thing on it - nothing to lose.
+void beginLogs() {
+  logsReady = LittleFS.begin(true);
+  if (!logsReady) {
+    Serial.println("logs: LittleFS mount failed, motion telemetry disabled");
+    return;
+  }
+  LittleFS.mkdir(kLogDir);  // fine if it already exists
+  Serial.printf("logs: %u bytes free of %u\n", freeBytes(),
+                static_cast<unsigned>(LittleFS.totalBytes()));
+}
+
+// The boot stamp is epoch - uptime, exact to the second: SNTP sets the system
+// clock to the second, so elapsed millis give the boot moment back. Only
+// meaningful once clockIsSet().
+uint32_t bootEpochSeconds() { return epochSeconds() - millis() / 1000; }
+
+// One line, flushed immediately so GET /logs/<name> sees it without waiting for
+// a close.
+void appendLogLine(uint32_t epochSeconds) {
+  if (!bootLog) {
+    return;
+  }
+  char line[ledfx::kLogLineCapacity];
+  const size_t len = ledfx::formatLogLine(line, sizeof(line), epochSeconds);
+  if (len == 0) {
+    return;
+  }
+  if (bootLog.write(reinterpret_cast<const uint8_t *>(line), len) != len) {
+    if (!logWriteFailed) {
+      logWriteFailed = true;
+      Serial.println("logs: write failed, telemetry stopped (partition full?)");
+    }
+    return;
+  }
+  bootLog.flush();
+}
+
+// Creates this boot's log file, named for the boot stamp, and writes out the
+// activations queued before the clock was real. Returns false while the clock
+// is still the 1970 default: without it there is no boot stamp, and the events
+// stay queued rather than being logged with a timestamp that would be a lie.
+bool openBootLog() {
+  if (bootLogName[0] != '\0') {
+    return true;
+  }
+  if (!logsReady || !ledfx::clockIsSet(epochSeconds())) {
+    return false;
+  }
+  if (ledfx::formatLogName(bootLogName, sizeof(bootLogName),
+                           bootEpochSeconds()) == 0) {
+    return false;
+  }
+  const String path = String(kLogDir) + "/" + bootLogName;
+  bootLog = LittleFS.open(path.c_str(), FILE_APPEND);
+  if (!bootLog) {
+    Serial.printf("logs: cannot open %s\n", path.c_str());
+    bootLogName[0] = '\0';
+    return false;
+  }
+  Serial.printf("logs: writing %s\n", bootLogName);
+  const uint32_t bootEpoch = bootEpochSeconds();
+  for (size_t i = 0; i < pendingCount; ++i) {
+    appendLogLine(bootEpoch + pendingEventsMs[i] / 1000);
+  }
+  pendingCount = 0;
+  return true;
+}
+
+// A radar activation: one line per rising edge, stamped with the moment it
+// started. Before the clock is real the activations queue (newest kept) and
+// land in the file with their true stamps once it is.
+void logMotionEvent(uint32_t nowMs) {
+  if (openBootLog()) {
+    appendLogLine(bootEpochSeconds() + nowMs / 1000);
+    return;
+  }
+  if (pendingCount == kMaxPendingEvents) {
+    memmove(pendingEventsMs, pendingEventsMs + 1,
+            (kMaxPendingEvents - 1) * sizeof(pendingEventsMs[0]));
+    --pendingCount;
+  }
+  pendingEventsMs[pendingCount++] = nowMs;
+}
+
+// Queued activations land as soon as the clock is real; until then they stay
+// queued, so this is a no-op on a rig that never reaches an NTP server.
+void flushPendingEvents() {
+  if (pendingCount > 0) {
+    openBootLog();
+  }
+}
+
+// Counted by scanning rather than cached, so a /logs/clear or a failed write
+// cannot leave /health lying. A handful of files, and /health is polled rarely.
+size_t logFileCount() {
+  if (!logsReady) {
+    return 0;
+  }
+  File dir = LittleFS.open(kLogDir);
+  if (!dir) {
+    return 0;
+  }
+  size_t count = 0;
+  for (File file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    if (!file.isDirectory() && ledfx::isLogName(file.name())) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+uint32_t freeBytes() {
+  if (!logsReady) {
+    return 0;
+  }
+  const size_t total = LittleFS.totalBytes();
+  const size_t used = LittleFS.usedBytes();
+  return used >= total ? 0 : static_cast<uint32_t>(total - used);
+}
+
+// /logs is bounded by the listing's buffers, so it keeps the newest
+// kMaxLogEntries; the collector is in lib/ledfx/logs.h, where the host suite
+// can check that the newest really are the ones kept.
+void collectLogListing(ledfx::LogListing &listing) {
+  ledfx::logListingReset(listing);
+  if (!logsReady) {
+    return;
+  }
+  File dir = LittleFS.open(kLogDir);
+  if (!dir) {
+    return;
+  }
+  for (File file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    if (!file.isDirectory() && ledfx::isLogName(file.name())) {
+      ledfx::logListingAdd(listing, file.name(),
+                           static_cast<uint32_t>(file.size()));
+    }
+  }
+}
+
+// GET /logs: the listing, newest first. Static buffers: this runs on the loop
+// task's stack and the listing is a couple of kilobytes.
+void handleLogList() {
+  static ledfx::LogListing listing;
+  static char body[ledfx::kLogListCapacity];
+  collectLogListing(listing);
+  ledfx::formatLogList(body, sizeof(body), listing.entries, listing.count,
+                       listing.total > listing.count);
+  server.send(200, "application/json", body);
+}
+
+// GET /logs/<name>: the file itself, streamed so a long log does not have to
+// fit in RAM. The name is checked against the rig's own naming, so the route
+// cannot be walked out of the log directory.
+void handleLogFile(const char *name) {
+  if (!ledfx::isLogName(name)) {
+    server.send(400, "text/plain", "invalid log name\n");
+    return;
+  }
+  const String path = String(kLogDir) + "/" + name;
+  File file = LittleFS.open(path.c_str(), FILE_READ);
+  if (!file || file.isDirectory()) {
+    server.send(404, "text/plain", "no such log\n");
+    return;
+  }
+  server.streamFile(file, "text/plain");
+  file.close();
+}
+
+// POST /logs/clear: drop every log, this boot's included - its handle is
+// closed first, or it would outlive the file - plus the activations still
+// queued for it.
+void handleLogClear() {
+  bootLog.close();
+  bootLogName[0] = '\0';
+  pendingCount = 0;
+  logWriteFailed = false;
+  if (logsReady) {
+    // One file per pass, repeating until a pass finds nothing: readdir does not
+    // promise to see every entry while the directory is being modified.
+    while (true) {
+      String victim;
+      File dir = LittleFS.open(kLogDir);
+      if (!dir) {
+        break;
+      }
+      for (File file = dir.openNextFile(); file; file = dir.openNextFile()) {
+        if (!file.isDirectory() && ledfx::isLogName(file.name())) {
+          victim = file.path();
+          break;
+        }
+      }
+      if (victim.isEmpty() || !LittleFS.remove(victim)) {
+        break;
+      }
+    }
+  }
+  server.send(200, "text/plain", "ok\n");
+}
+
+// The bundled WebServer matches URIs exactly - there is no pattern route in
+// 2.0.17 - so /logs/<name> is dispatched here, and everything else keeps the
+// wording the WebServer's own 404 would have used.
+void handleNotFound() {
+  const String uri = server.uri();
+  const String prefix = String(kLogDir) + "/";
+  if (server.method() == HTTP_GET && uri.startsWith(prefix) &&
+      uri.length() > prefix.length()) {
+    handleLogFile(uri.substring(prefix.length()).c_str());
+    return;
+  }
+  server.send(404, "text/html", String("Not found: ") + uri);
+}
+
 // Advertises the rig as spider.local plus an _http._tcp service record.
 //
 // Safe to run before the AP is reachable: mdns_init() registers its own
@@ -317,11 +569,20 @@ void setup() {
   // tuning instead of flashing its defaults for a frame.
   loadTuning();
 
+  // Storage before the routes, so a request that arrives early already sees the
+  // real partition.
+  beginLogs();
+
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/mode", HTTP_POST, handleMode);
   server.on("/config", HTTP_GET, handleConfigGet);
   server.on("/config", HTTP_POST, handleConfigPost);
   server.on("/config/reset", HTTP_POST, handleConfigReset);
+  server.on("/logs", HTTP_GET, handleLogList);
+  server.on("/logs/clear", HTTP_POST, handleLogClear);
+  // /logs/<name> has no pattern route in this WebServer version, so it is
+  // dispatched from here; unknown paths keep the WebServer's own 404 wording.
+  server.onNotFound(handleNotFound);
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
 
@@ -339,7 +600,19 @@ void loop() {
   server.handleClient();
   const uint32_t now = millis();
   maintainWifi(now);
-  if (engine.tick(now, radarActive())) {
+
+  // The engine only needs the radar level, but the log wants the moment motion
+  // started: one line per rising edge.
+  const bool radar = radarActive();
+  if (radar && !radarWasActive) {
+    logMotionEvent(now);
+  }
+  radarWasActive = radar;
+
+  // Queued activations (motion before the clock was real) land once SNTP does.
+  flushPendingEvents();
+
+  if (engine.tick(now, radar)) {
     pushFrame();
   }
 }

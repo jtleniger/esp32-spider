@@ -24,12 +24,14 @@ constexpr uint32_t kSyncedEpochS = 1791738245;  // 2026-10-11T17:04:05Z
 
 void testHealthBodyExact() {
   char body[ledfx::kHealthBodyCapacity];
-  const size_t len = ledfx::formatHealth(
-      body, sizeof(body),
-      statusWith(ledfx::kModeSmolder, 42000, kSyncedEpochS));
+  ledfx::HealthStatus status = statusWith(ledfx::kModeSmolder, 42000,
+                                          kSyncedEpochS);
+  status.logFiles = 3;
+  status.freeBytes = 1400000;
+  const size_t len = ledfx::formatHealth(body, sizeof(body), status);
   TEST_ASSERT_EQUAL_STRING(
       "{\"mode\":0,\"uptime_s\":42,\"utc\":\"2026-10-11T17:04:05Z\","
-      "\"clock_set\":true}",
+      "\"clock_set\":true,\"log_files\":3,\"free_bytes\":1400000}",
       body);
   TEST_ASSERT_EQUAL_UINT32(strlen(body), len);
 }
@@ -42,7 +44,7 @@ void testHealthUptimeIsWholeSeconds() {
                       statusWith(ledfx::kModeToxic, 999, kSyncedEpochS));
   TEST_ASSERT_EQUAL_STRING(
       "{\"mode\":6,\"uptime_s\":0,\"utc\":\"2026-10-11T17:04:05Z\","
-      "\"clock_set\":true}",
+      "\"clock_set\":true,\"log_files\":0,\"free_bytes\":0}",
       body);
   ledfx::formatHealth(body, sizeof(body),
                       statusWith(ledfx::kModeToxic, 1999, kSyncedEpochS));
@@ -59,7 +61,7 @@ void testHealthBeforeClockSync() {
   ledfx::formatHealth(body, sizeof(body), statusWith(ledfx::kModePulse, 0, 0));
   TEST_ASSERT_EQUAL_STRING(
       "{\"mode\":2,\"uptime_s\":0,\"utc\":\"1970-01-01T00:00:00Z\","
-      "\"clock_set\":false}",
+      "\"clock_set\":false,\"log_files\":0,\"free_bytes\":0}",
       body);
 }
 
@@ -68,8 +70,10 @@ void testHealthBeforeClockSync() {
 // target's signed 32-bit time_t, which is what time() can actually return.
 void testHealthBodyFitsExtremeValues() {
   char body[ledfx::kHealthBodyCapacity];
-  const size_t len = ledfx::formatHealth(
-      body, sizeof(body), statusWith(65535, 0xFFFFFFFFu, 2147483647));
+  ledfx::HealthStatus status = statusWith(65535, 0xFFFFFFFFu, 2147483647);
+  status.logFiles = 0xFFFFFFFFu;
+  status.freeBytes = 0xFFFFFFFFu;
+  const size_t len = ledfx::formatHealth(body, sizeof(body), status);
   TEST_ASSERT_TRUE(len > 0);
   TEST_ASSERT_TRUE(len < ledfx::kHealthBodyCapacity);
   TEST_ASSERT_EQUAL_CHAR('{', body[0]);

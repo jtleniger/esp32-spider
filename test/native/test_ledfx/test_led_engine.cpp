@@ -193,6 +193,18 @@ void testUtcStampLeapDay(void);
 void testUtcStampRejectsSmallBuffers(void);
 void testClockIsSetThreshold(void);
 
+// --- logs.h cases, implemented in test_logs.cpp ---
+void testLogNameFromBootEpoch(void);
+void testLogNameRejectsSmallBuffers(void);
+void testLogLineIsStampPlusNewline(void);
+void testLogNameValidationAcceptsWrittenNames(void);
+void testLogNameValidationRejectsEverythingElse(void);
+void testLogListBody(void);
+void testLogListingKeepsNewest(void);
+void testLogListingIsOrderIndependent(void);
+void testLogListingBelowCapacity(void);
+void testLogListFitsWorstCase(void);
+
 // --- tuning table / POST /config cases, implemented in test_tuning.cpp ---
 void testTuningDefaultsAreValid(void);
 void testTuningTableIsWellFormed(void);
@@ -1140,6 +1152,16 @@ int main(void) {
   RUN_TEST(testUtcStampLeapDay);
   RUN_TEST(testUtcStampRejectsSmallBuffers);
   RUN_TEST(testClockIsSetThreshold);
+  RUN_TEST(testLogNameFromBootEpoch);
+  RUN_TEST(testLogNameRejectsSmallBuffers);
+  RUN_TEST(testLogLineIsStampPlusNewline);
+  RUN_TEST(testLogNameValidationAcceptsWrittenNames);
+  RUN_TEST(testLogNameValidationRejectsEverythingElse);
+  RUN_TEST(testLogListBody);
+  RUN_TEST(testLogListingKeepsNewest);
+  RUN_TEST(testLogListingIsOrderIndependent);
+  RUN_TEST(testLogListingBelowCapacity);
+  RUN_TEST(testLogListFitsWorstCase);
   RUN_TEST(testTuningDefaultsAreValid);
   RUN_TEST(testTuningTableIsWellFormed);
   RUN_TEST(testTuningEveryFieldEditsOnlyItself);
