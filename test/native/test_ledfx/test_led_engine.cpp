@@ -77,6 +77,57 @@ bool anyWarmLit(const ledfx::LedEngine &e) {
   return false;
 }
 
+// How many eyes have any ember LED above zero.
+uint8_t countWarmEyes(const ledfx::LedEngine &e) {
+  uint8_t count = 0;
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    if (channelLevel(e, ledfx::kEyes[eye].orange) > 0 ||
+        channelLevel(e, ledfx::kEyes[eye].red) > 0) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+// Bit per eye whose green LED is above zero.
+uint8_t greenMask(const ledfx::LedEngine &e) {
+  uint8_t mask = 0;
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    if (greenLevel(e, eye) > 0) {
+      mask |= static_cast<uint8_t>(1u << eye);
+    }
+  }
+  return mask;
+}
+
+// Brightest green level anywhere on the rig.
+uint16_t maxGreenLevel(const ledfx::LedEngine &e) {
+  uint16_t best = 0;
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    const uint16_t level = greenLevel(e, eye);
+    if (level > best) best = level;
+  }
+  return best;
+}
+
+// Runs agitation episodes forward from `t` until `kind` is picked, and returns
+// the tick that episode started on (0 if it never came up). Leaves the engine
+// inside the episode.
+uint32_t enterAgitationKind(ledfx::LedEngine &e, uint8_t kind, uint32_t &t) {
+  for (int episode = 0; episode < 40; ++episode) {
+    e.tick(t, true);
+    if (e.agitationKind() == kind) {
+      return t;
+    }
+    while (e.smolderState() == ledfx::kSmolderAgitated) {
+      t += 25;
+      e.tick(t, false);
+    }
+    t += 1000;
+  }
+  return 0;
+}
+
 // Level renderPulse() emits `up` ms into a half cycle of `halfMs`.
 uint16_t pulseLevel(uint32_t up, uint32_t halfMs) {
   return static_cast<uint16_t>((up * ledfx::kPulseLevels / halfMs) *
@@ -541,9 +592,61 @@ static void testSmolderNapsWithinBoundsThenWakes() {
   const uint32_t nap = tWake - tOnset;
   TEST_ASSERT_TRUE(nap >= ledfx::kSmolderSleepMinMs - 250);
   TEST_ASSERT_TRUE(nap <= ledfx::kSmolderSleepMaxMs + 250);
+
+  // Waking is a staggered re-open, so the embers are only all back once it has
+  // run its course.
+  for (uint32_t t = tWake; t <= tWake + ledfx::kSmolderWakeMs + 250; t += 25) {
+    e.tick(t, false);
+  }
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
   TEST_ASSERT_TRUE(anyLit(e));
   TEST_ASSERT_FALSE(anyGreenLit(e));
+}
+
+// Waking opens the eyes one at a time, in kEyes order, like the ripple spread.
+static void testSmolderWakesEyeByEye() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  uint32_t t = 0;
+  for (; t <= ledfx::kSmolderSleepDeadlineMs; t += 250) {
+    e.tick(t, false);
+    if (e.smolderState() == ledfx::kSmolderAsleep) {
+      break;
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, e.smolderState());
+
+  uint32_t wakeTick = 0;
+  for (uint32_t u = t + 250; u <= t + ledfx::kSmolderSleepMaxMs + 500;
+       u += 25) {
+    e.tick(u, false);
+    if (e.smolderState() == ledfx::kSmolderAwake) {
+      wakeTick = u;
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE(wakeTick != 0);
+  TEST_ASSERT_FALSE(anyLit(e));  // the wake starts from the dark nap
+
+  uint32_t firstLit[ledfx::kEyeCount] = {};
+  for (uint32_t u = wakeTick; u <= wakeTick + ledfx::kSmolderWakeMs + 200;
+       u += 25) {
+    e.tick(u, false);
+    TEST_ASSERT_FALSE(anyGreenLit(e));
+    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+      if (firstLit[eye] == 0 && (channelLevel(e, ledfx::kEyes[eye].orange) > 0 ||
+                                 channelLevel(e, ledfx::kEyes[eye].red) > 0)) {
+        firstLit[eye] = u;
+      }
+    }
+  }
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    TEST_ASSERT_TRUE(firstLit[eye] != 0);
+    if (eye > 0) {
+      TEST_ASSERT_TRUE(firstLit[eye] > firstLit[eye - 1]);
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kEyeCount, countWarmEyes(e));
 }
 
 // While asleep the embers still surface: after the eyelid gestures have run the
@@ -594,6 +697,9 @@ static void testSmolderMotionWhileAsleepAgitates() {
 
   e.tick(t + 250, true);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
+  TEST_ASSERT_FALSE(anyWarmLit(e));
+  // A darting episode starts its fade from black, so give it a moment.
+  e.tick(t + 300, true);
   TEST_ASSERT_TRUE(anyGreenLit(e));
   TEST_ASSERT_FALSE(anyWarmLit(e));
 }
@@ -605,12 +711,14 @@ static void testSmolderAgitationIsGreenOnlyAndAlive() {
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
   e.tick(0, false);
   bool litEyes[ledfx::kEyeCount] = {};
+  bool sawGreen = false;
   uint32_t last = 0;
   for (uint32_t t = 20; t <= 900; t += 20) {
     e.tick(t, true);
     last = t;
     TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, e.smolderState());
     TEST_ASSERT_FALSE(anyWarmLit(e));
+    if (anyGreenLit(e)) sawGreen = true;
     for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
       if (greenLevel(e, eye) > 0) {
         litEyes[eye] = true;
@@ -622,10 +730,17 @@ static void testSmolderAgitationIsGreenOnlyAndAlive() {
     if (litEyes[eye]) ++distinct;
   }
   TEST_ASSERT_TRUE(distinct >= 2);
-  TEST_ASSERT_TRUE(anyGreenLit(e));
+  TEST_ASSERT_TRUE(sawGreen);
 
-  e.tick(last + ledfx::kAgitationHoldMs + 100, false);
+  // The hold keeps the animation up, then the embers come back.
+  for (uint32_t t = last + 100;
+       t <= last + ledfx::kAgitationHoldMs + ledfx::kAgitationExitMs + 100;
+       t += 100) {
+    e.tick(t, false);
+  }
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  TEST_ASSERT_TRUE(anyWarmLit(e));
+  TEST_ASSERT_FALSE(anyGreenLit(e));
 }
 
 // The hold keeps the animation up until the radar has been quiet that long.
@@ -645,8 +760,163 @@ static void testSmolderAgitationEndsAfterMotionStops() {
 
   e.tick(last + ledfx::kAgitationHoldMs, false);
   TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+
+  for (uint32_t t = last + ledfx::kAgitationHoldMs + 50;
+       t <= last + ledfx::kAgitationHoldMs + ledfx::kAgitationExitMs + 100;
+       t += 50) {
+    e.tick(t, false);
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
   TEST_ASSERT_TRUE(anyWarmLit(e));
   TEST_ASSERT_FALSE(anyGreenLit(e));
+}
+
+// Handing back from agitation is a crossfade: the live green frame keeps running
+// while it fades out and the embers rise underneath, never a hard cut from
+// greens to a full-brightness ember frame.
+static void testSmolderAgitationCrossfadesBackToEmbers() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  e.tick(0, false);
+  uint32_t last = 0;
+  for (uint32_t t = 100; t <= 300; t += 100) {
+    e.tick(t, true);
+    last = t;
+  }
+  const uint32_t exit = last + ledfx::kAgitationHoldMs;
+  e.tick(exit, false);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+  TEST_ASSERT_TRUE(anyGreenLit(e));   // the greens carry on where they were
+  TEST_ASSERT_FALSE(anyWarmLit(e));   // and the embers start from nothing
+
+  uint8_t previous = 0;
+  for (uint32_t t = exit + 25; t <= exit + ledfx::kAgitationExitMs + 100;
+       t += 25) {
+    e.tick(t, false);
+    const uint8_t warmEyes = countWarmEyes(e);
+    TEST_ASSERT_TRUE(warmEyes >= previous);
+    previous = warmEyes;
+  }
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kEyeCount, previous);
+  TEST_ASSERT_FALSE(anyGreenLit(e));
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAwake, e.smolderState());
+}
+
+// The ripple loops without a dark gap: an eye's flash outlives the lap, so the
+// next lap's head is already up when the tail of the old one fades.
+static void testSmolderRippleLoopsWithoutGoingDark() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  uint32_t t = 100000;
+  const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationRipple, t);
+  TEST_ASSERT_TRUE(entry != 0);
+  for (uint32_t u = entry; u < entry + 4 * ledfx::kAgitationRippleLapMs;
+       u += 10) {
+    e.tick(u, true);
+    TEST_ASSERT_TRUE(anyGreenLit(e));
+    TEST_ASSERT_FALSE(anyWarmLit(e));
+  }
+}
+
+// The sweep crosses the face slowly, rests on the far eye, then crosses back.
+static void testSmolderSweepCrossesAndRests() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  uint32_t t = 100000;
+  const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationSweep, t);
+  TEST_ASSERT_TRUE(entry != 0);
+
+  // One forward traverse takes a random 1..3 s (the head only lights the far eye
+  // once it has actually arrived).
+  uint32_t atRight = 0;
+  for (uint32_t u = entry;
+       u <= entry + ledfx::kAgitationSweepMaxMs + 500 && atRight == 0; u += 25) {
+    e.tick(u, true);
+    if (brightestEye(e) == ledfx::kEyeCount - 1) {
+      atRight = u;
+    }
+  }
+  TEST_ASSERT_TRUE(atRight != 0);
+  const uint32_t traverse = atRight - entry;
+  TEST_ASSERT_TRUE(traverse >= ledfx::kAgitationSweepMinMs);
+  TEST_ASSERT_TRUE(traverse <= ledfx::kAgitationSweepMaxMs + 25);
+
+  // Then it rests on that eye for a random 2..5 s. The measurement starts a
+  // little late: the head has to move clear before another eye outshines it.
+  const uint8_t head = ledfx::kEyes[ledfx::kEyeCount - 1].green;
+  uint16_t dimmest = ledfx::kMaxPwm;
+  uint16_t brightest = 0;
+  uint32_t leavesRight = 0;
+  for (uint32_t u = atRight + 25;
+       u <= atRight + ledfx::kAgitationSweepPauseMaxMs + 500 &&
+       leavesRight == 0;
+       u += 25) {
+    e.tick(u, true);
+    const uint16_t level = channelLevel(e, head);
+    if (level < dimmest) dimmest = level;
+    if (level > brightest) brightest = level;
+    if (brightestEye(e) != ledfx::kEyeCount - 1) {
+      leavesRight = u;
+    }
+  }
+  TEST_ASSERT_TRUE(leavesRight != 0);
+  const uint32_t rest = leavesRight - atRight;
+  TEST_ASSERT_TRUE(rest >= ledfx::kAgitationSweepPauseMinMs);
+  TEST_ASSERT_TRUE(rest <= ledfx::kAgitationSweepPauseMaxMs + 400);
+  // A head at rest still shimmers: nothing else can move its level.
+  TEST_ASSERT_TRUE(brightest - dimmest >= 400);
+}
+
+// Dart fades each eye up and down inside a long hop instead of snapping.
+static void testSmolderDartFadesAndHopsSlowly() {
+  ledfx::LedEngine e;
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
+  uint32_t t = 100000;
+  const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationDart, t);
+  TEST_ASSERT_TRUE(entry != 0);
+
+  uint8_t mask = 0;
+  uint32_t run = 0;
+  uint32_t longestRun = 0;
+  uint16_t dimmest = ledfx::kMaxPwm;
+  uint16_t previousFull = 0;
+  bool haveFull = false;
+  bool sawFlicker = false;
+  for (uint32_t u = entry; u <= entry + 4000; u += 25) {
+    e.tick(u, true);
+    TEST_ASSERT_FALSE(anyWarmLit(e));
+    const uint8_t now = greenMask(e);
+    if (now == mask) {
+      run += 25;
+    } else {
+      if (run > longestRun) longestRun = run;
+      run = 25;
+      mask = now;
+    }
+    if (mask == 0) {
+      continue;
+    }
+    const uint16_t level = maxGreenLevel(e);
+    if (level < dimmest) dimmest = level;
+    if (level >= ledfx::kMaxPwm - 200) {
+      // Without flicker every full-brightness sample would be exactly kMaxPwm.
+      if (haveFull && level != previousFull) {
+        sawFlicker = true;
+      }
+      previousFull = level;
+      haveFull = true;
+    } else {
+      haveFull = false;
+    }
+  }
+  if (run > longestRun) longestRun = run;
+  // A hop lasts kAgitationDartStepMs, so the lit set changes only a handful of
+  // times in 4 s (it changed every 90 ms before).
+  TEST_ASSERT_TRUE(longestRun >= 300);
+  // Eyes fade up and down rather than snapping on and off.
+  TEST_ASSERT_TRUE(dimmest < ledfx::kMaxPwm / 2);
+  // A lit eye still flickers while it sits at full brightness.
+  TEST_ASSERT_TRUE(sawFlicker);
 }
 
 // Repeated episodes do not always pick the same animation.
@@ -1065,10 +1335,15 @@ int main(void) {
   RUN_TEST(testSmolderStaysAwakeBeforeSleepWindow);
   RUN_TEST(testSmolderFallsAsleepWhenUndisturbed);
   RUN_TEST(testSmolderNapsWithinBoundsThenWakes);
+  RUN_TEST(testSmolderWakesEyeByEye);
   RUN_TEST(testSmolderHalfOpensEyesWhileAsleep);
   RUN_TEST(testSmolderMotionWhileAsleepAgitates);
   RUN_TEST(testSmolderAgitationIsGreenOnlyAndAlive);
   RUN_TEST(testSmolderAgitationEndsAfterMotionStops);
+  RUN_TEST(testSmolderAgitationCrossfadesBackToEmbers);
+  RUN_TEST(testSmolderRippleLoopsWithoutGoingDark);
+  RUN_TEST(testSmolderSweepCrossesAndRests);
+  RUN_TEST(testSmolderDartFadesAndHopsSlowly);
   RUN_TEST(testSmolderAgitationKindsVary);
   RUN_TEST(testStalkerScansDimThenPopsRed);
   RUN_TEST(testStalkerReleaseReturnsToScan);

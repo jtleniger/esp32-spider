@@ -38,8 +38,8 @@ constexpr uint8_t kLedsPerEye = 3;
 // its three LEDs. Channels come from CHANNELS.md; within a braid the eyes are
 // numbered by rank pairing - eye i takes the i-th orange, i-th red and i-th
 // green channel in ascending channel order. The table order (the four eyes of
-// braid 1, then braid 2) is also the order kModeSmolder spreads its green
-// flash across the rig.
+// braid 1, then braid 2) is also the order kModeSmolder walks the rig in, both
+// for its green ripple and for the wake that opens the eyes one at a time.
 struct EyeWiring {
   uint8_t braid;
   uint8_t orange;
@@ -120,27 +120,47 @@ constexpr uint32_t kSleepFlareEndMs = 550;
 constexpr uint16_t kSleepDipPermille = 400;
 constexpr uint16_t kSleepFlarePermille = 750;
 
+// Waking: the same gesture runs backwards (dark, slit, flare, open) and each eye
+// starts kSleepWakeSpreadMs after the previous one, so the eyes open one at a
+// time like the ripple spread. kSmolderWakeMs is that whole sequence.
+constexpr uint32_t kSleepWakeSpreadMs = 120;
+constexpr uint32_t kSmolderWakeMs =
+    (kEyeCount - 1) * kSleepWakeSpreadMs + kSleepGestureMs;
+
 // --- kModeSmolder agitation (green only) ---
 // On motion the rig runs one of kAgitationKindCount green animations chosen at
 // random per episode; it stays until the radar has been quiet for
-// kAgitationHoldMs.
+// kAgitationHoldMs, then the greens crossfade back into the embers over
+// kAgitationExitMs while the animation keeps running underneath.
 constexpr uint32_t kAgitationHoldMs = 1500;
+constexpr uint32_t kAgitationExitMs = 1000;
 constexpr uint16_t kAgitationFlickerPwm = 1200;   // shared flicker amplitude
 constexpr uint32_t kAgitationFlickerStepMs = 43;  // shared flicker refresh
-// Sweep: a bright eye bounces left<->right across the face (kEyes order 0..7)
-// with a trailing glow.
-constexpr uint32_t kAgitationSweepStepMs = 130;        // ms per eye of travel
-constexpr uint16_t kAgitationSweepTailPermille = 1500; // 1.5-eye trail
-// Dart: single eyes snap green for a step at a time, hopping unpredictably.
-constexpr uint32_t kAgitationDartStepMs = 90;
-// Ripple: the original eye-by-eye green spread, looping without a gap.
+// Sweep: the head runs from one end of the face to the other in a random
+// kAgitationSweepMinMs..kAgitationSweepMaxMs, then rests on that end eye for a
+// random kAgitationSweepPauseMinMs..kAgitationSweepPauseMaxMs before sweeping
+// back; a trailing glow follows behind the head.
+constexpr uint32_t kAgitationSweepMinMs = 1000;
+constexpr uint32_t kAgitationSweepMaxMs = 3000;
+constexpr uint32_t kAgitationSweepPauseMinMs = 2000;
+constexpr uint32_t kAgitationSweepPauseMaxMs = 5000;
+constexpr uint16_t kAgitationSweepTailPermille = 1500;  // 1.5-eye trail
+// Dart: a random eye or two fades up, holds and fades back down inside each
+// kAgitationDartStepMs hop, then a fresh group is picked.
+constexpr uint32_t kAgitationDartStepMs = 450;
+constexpr uint32_t kAgitationDartAttackMs = 150;
+constexpr uint32_t kAgitationDartHoldMs = 150;
+constexpr uint32_t kAgitationDartFadeMs = 150;
+// Ripple: the original eye-by-eye green spread, looping. The lap ends before an
+// eye's flash does, so the next lap's head rises while the previous lap's tail
+// is still fading and the rig never blinks fully dark between laps.
 constexpr uint32_t kGreenSpreadMs = 120;    // stagger between consecutive eyes
 constexpr uint32_t kGreenAttackMs = 40;     // snap-on ramp, effectively instant
 constexpr uint32_t kGreenHoldMs = 3000;     // full-brightness hold
 constexpr uint32_t kGreenFadeMs = 800;      // fade back out
 constexpr uint16_t kGreenFlickerPwm = 1200; // ember noise at full brightness
 constexpr uint32_t kAgitationRippleLapMs =
-    (kEyeCount - 1) * kGreenSpreadMs + kGreenAttackMs + kGreenHoldMs + kGreenFadeMs;
+    (kEyeCount - 1) * kGreenSpreadMs + kGreenAttackMs + kGreenHoldMs;
 
 // --- kModeStalker (mode 3) tuning ---
 // One dim eye at a time scans around the rig; each scanning eye lights a single

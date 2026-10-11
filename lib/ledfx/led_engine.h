@@ -68,6 +68,9 @@ class LedEngine {
   void renderSmolder(uint32_t nowMs, bool radarHigh, uint16_t *out);
   // Renders the orange/red ember crossfade (no green) for every eye.
   void renderSmolderEmbers(uint32_t nowMs, uint16_t *out);
+  // Renders the hand-back into the embers: either the whole-face crossfade out
+  // of agitation, or the eye-by-eye wake out of a nap.
+  void renderSmolderWaking(uint32_t nowMs, uint16_t *out);
   // Renders one eye's ember levels from the shared crossfade (no flicker step
   // recompute by callers).
   void emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange, uint16_t &red);
@@ -75,7 +78,12 @@ class LedEngine {
   void renderSmolderAsleep(uint32_t nowMs, uint16_t *out);
   // Renders the green-only agitation animation agitationKind_.
   void renderSmolderAgitated(uint32_t nowMs, uint16_t *out);
-  void enterAwake(uint32_t nowMs);
+  // The green level of every eye in the current agitation frame (0 when that
+  // eye is dark), advancing whatever animation phase needs it.
+  void agitationFrame(uint32_t nowMs, uint16_t *green);
+  // Advances the sweep through its traverse/rest phases up to nowMs.
+  void advanceSweep(uint32_t nowMs);
+  void enterAwake(uint32_t nowMs, bool fromAgitation);
   void enterAsleep(uint32_t nowMs);
   void enterAgitated(uint32_t nowMs);
 
@@ -110,6 +118,9 @@ class LedEngine {
   uint32_t smolderStartMs_;  // kModeSmolder only: phase reference for the crossfade
   SmolderState smolderState_;    // kModeSmolder: current sleep/wake sub-state
   uint32_t smolderStateStartMs_; // kModeSmolder: when smolderState_ was entered
+  bool waking_;                  // kModeSmolder awake: a hand-back is running
+  bool wakeFromAgitation_;       // kModeSmolder waking: crossfade out of greens
+  uint32_t wakeStartMs_;         // kModeSmolder waking: hand-back origin
   uint32_t smolderSleepSeq_;     // kModeSmolder: sleep-episode counter (seeds maths)
   uint32_t sleepHazardStartMs_;  // kModeSmolder awake: hazard clock origin
   uint32_t sleepCheckMs_;        // kModeSmolder awake: next hazard roll time
@@ -122,6 +133,11 @@ class LedEngine {
   uint32_t agitationSeq_;        // kModeSmolder: agitation counter (picks the kind)
   uint32_t agitationStartMs_;    // kModeSmolder agitated: animation phase origin
   uint32_t lastRadarHighMs_;     // kModeSmolder agitated: last radar-high tick
+  bool sweepTraversing_;         // kModeSmolder agitated: sweeping, not resting
+  bool sweepForward_;            // kModeSmolder agitated: head travels left->right
+  uint32_t sweepPhaseStartMs_;   // kModeSmolder agitated: current sweep phase origin
+  uint32_t sweepPhaseEndMs_;     // kModeSmolder agitated: when the next phase starts
+  uint32_t sweepSeq_;            // kModeSmolder: sweep phase counter (seeds lengths)
   uint32_t stalkerAlert_;       // kModeStalker: Q16 ramp toward the pop (0..1<<16)
   uint32_t stalkerLastTickMs_;  // kModeStalker: previous tick() timestamp
   uint32_t stalkerStartMs_;     // kModeStalker: scan phase reference
