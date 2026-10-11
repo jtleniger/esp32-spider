@@ -180,6 +180,12 @@ void testParseChannelRejectOutOfRange(void);
 void testParseChannelRejectNonDigits(void);
 void testParseChannelRejectWhitespace(void);
 
+// --- formatHealth cases, implemented in test_status.cpp ---
+void testHealthBodyExact(void);
+void testHealthUptimeIsWholeSeconds(void);
+void testHealthBodyFitsExtremeValues(void);
+void testHealthBodyRejectsTinyBuffer(void);
+
 // --- shared cases ---
 
 // /mode's ?m= values are the enum values, so their numbering is a contract.
@@ -1106,5 +1112,9 @@ int main(void) {
   RUN_TEST(testParseChannelRejectOutOfRange);
   RUN_TEST(testParseChannelRejectNonDigits);
   RUN_TEST(testParseChannelRejectWhitespace);
+  RUN_TEST(testHealthBodyExact);
+  RUN_TEST(testHealthUptimeIsWholeSeconds);
+  RUN_TEST(testHealthBodyFitsExtremeValues);
+  RUN_TEST(testHealthBodyRejectsTinyBuffer);
   return UNITY_END();
 }

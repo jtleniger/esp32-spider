@@ -14,7 +14,7 @@ pio run -e esp32dev  # compile (first run downloads ~1 GB)
 
 ## Layout
 
-`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels. `src/main.cpp` is ESP32-only glue (WiFi, `WebServer`, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring; git-ignored `include/secrets.h` holds WiFi credentials.
+`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels; `health.h` builds the `GET /health` body (`{"mode":M,"uptime_s":U}`, JSON because the endpoint keeps gaining fields). `src/main.cpp` is ESP32-only glue (WiFi, `WebServer`, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring; git-ignored `include/secrets.h` holds WiFi credentials.
 
 ## Why the code is shaped this way
 

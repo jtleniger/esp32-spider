@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 
+#include <health.h>
 #include <led_engine.h>
 #include <led_layout.h>
 #include <modes.h>
@@ -35,12 +36,19 @@ void pushFrame() {
 // HLK-LD1020: driven high while motion is detected.
 bool radarActive() { return digitalRead(ledfx::kRadarPin) == HIGH; }
 
+// Status document for monitoring: the mode number currently running (the same
+// value POST /mode takes) and whole seconds since boot. JSON, because this
+// endpoint accumulates fields (log counts, free space) and a parser should not
+// have to care which ones are present. The body builder lives in lib/ledfx so
+// the host suite can assert it; only the millis() uptime source is Arduino-side.
 void handleHealth() {
   if (WiFi.status() != WL_CONNECTED) {
     server.send(503, "text/plain", "");
     return;
   }
-  server.send(200, "text/plain", "");
+  char body[ledfx::kHealthBodyCapacity];
+  ledfx::formatHealth(body, sizeof(body), engine.mode(), millis());
+  server.send(200, "application/json", body);
 }
 
 // The ESP32 WebServer parses the query string independently of method and
