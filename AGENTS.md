@@ -14,7 +14,7 @@ pio run -e esp32dev  # compile (first run downloads ~1 GB)
 
 ## Layout
 
-`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels; `health.h` builds the `GET /health` body (`{"mode":M,"uptime_s":U}`, JSON because the endpoint keeps gaining fields); `tuning.h` is the knob table behind `POST /config`. `src/main.cpp` is ESP32-only glue (WiFi, `WebServer`, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring; git-ignored `include/secrets.h` holds WiFi credentials.
+`lib/ledfx/led_engine.{h,cpp}` is the effect engine; `led_layout.h` holds pins, wiring and all tuning constants; `modes.h` parses modes/channels; `health.h` builds the `GET /health` body (`{"mode":M,"uptime_s":U}`, JSON because the endpoint keeps gaining fields); `tuning.h` is the knob table behind `POST /config`. `src/main.cpp` is ESP32-only glue (WiFi, mDNS, `WebServer`, TLC5947, radar). `test/native/test_ledfx/` is the host Unity suite. `PINS.md`/`CHANNELS.md` document wiring; git-ignored `include/secrets.h` holds WiFi credentials.
 
 ## Why the code is shaped this way
 
@@ -26,6 +26,7 @@ pio run -e esp32dev  # compile (first run downloads ~1 GB)
 - **Tuning constants live only in `led_layout.h`** but tests hard-code derived values (peak 4095, one step = 63), so changing one means updating those expectations.
 - **One `main()` per suite**: all files under `test/native/test_ledfx/` link into one binary (`test_led_engine.cpp` defines `main()` and runs `test_modes.cpp`'s cases).
 - **`maintainWifi()` is load-bearing**: `WiFi.setAutoReconnect()` is a no-op in arduino-esp32 2.0.17, so nothing else reconnects after an AP restart. It also owns the connect poll: `beginWifi()` deliberately does not wait, because `WiFi.waitForConnectResult()` is a blocking `delay()` loop and the rig is power-cycled daily with the AP not always up. WiFi must never gate the engine - the connect wait is gone and loop() only polls/retries - but `beginWifi()` must still precede `server.begin()`, since `WiFi.mode()` is what runs `esp_netif_init()`/`tcpip_init()` while `WiFiServer::begin()` opens a lwip socket immediately (dropping netif init first panics with `tcpip_send_msg_wait_sem (Invalid mbox)`).
+- **`spider.local` is mDNS, not a static IP**: `beginMdns()` runs after `beginWifi()` because `mdns_init()` resolves the STA netif by ifkey, which `WiFi.mode()` is what creates - but it does not need the AP to be up, since the responder registers its own netif/IP event handlers and announces whenever the link comes up (the AP is often missing at boot, see above). Init failure is logged and non-fatal; the rig still serves on its IP.
 - **GPIO2 (`kRadarPin`) is a strapping pin** that must be low at reset; a radar idling high can block boot mode. `INPUT_PULLDOWN` accommodates the hardware, it isn't a bug fix.
 - Style: 2-space indent, `snake_case` locals, `kCamelCase` constants, trailing `_` members, C++17.
 

@@ -1,5 +1,6 @@
 #include <Adafruit_TLC5947.h>
 #include <Arduino.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -20,6 +21,9 @@ namespace {
 
 constexpr uint16_t kHttpPort = 80;
 constexpr uint32_t kWifiRetryIntervalMs = 5000;
+// mDNS name: the rig answers as spider.local, so the UI does not depend on
+// whatever address the AP hands out.
+constexpr const char *kMdnsHostname = "spider";
 
 // Persisted tuning overrides (POST /config). One blob under one key: the field
 // table in tuning.h is a struct layout, so the version is bumped whenever the
@@ -193,6 +197,25 @@ void handleConfigReset() {
   server.send(200, "text/plain", "ok\n");
 }
 
+// Advertises the rig as spider.local plus an _http._tcp service record.
+//
+// Safe to run before the AP is reachable: mdns_init() registers its own
+// IP_EVENT/WIFI_EVENT handlers and tracks the STA netif, so the responder
+// announces the moment the link comes up - which matters because the rig is
+// power-cycled daily with the AP not always up (see beginWifi).
+//
+// Still must run after beginWifi(): mdns_init() resolves the STA netif by
+// ifkey, and WiFi.mode() is what creates it. Failing here is not fatal: the rig
+// keeps animating and serving over the IP, only the name is missing.
+void beginMdns() {
+  if (!MDNS.begin(kMdnsHostname)) {
+    Serial.println("mDNS init failed");
+    return;
+  }
+  MDNS.addService("http", "tcp", kHttpPort);
+  Serial.printf("mDNS: http://%s.local/\n", kMdnsHostname);
+}
+
 // Fire-and-forget: bring the STA interface up and queue the first connect
 // attempt, but never wait for the AP. In arduino-esp32 2.0.17
 // WiFi.waitForConnectResult() is a blocking delay() loop, so waiting here
@@ -265,6 +288,10 @@ void setup() {
   server.on("/config/reset", HTTP_POST, handleConfigReset);
   server.begin();
   Serial.printf("HTTP server listening on port %d\n", kHttpPort);
+
+  // After beginWifi(), like the server: mDNS needs the STA netif that
+  // WiFi.mode() creates.
+  beginMdns();
 
   engine.setMode(ledfx::kModeSmolder, 0, millis());  // embers, then sleep, green agitation on motion
 }
