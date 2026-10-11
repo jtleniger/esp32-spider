@@ -147,12 +147,19 @@ constexpr uint32_t kAgitationSweepMaxMs = 3000;
 constexpr uint32_t kAgitationSweepPauseMinMs = 2000;
 constexpr uint32_t kAgitationSweepPauseMaxMs = 5000;
 constexpr uint16_t kAgitationSweepTailPermille = 1500;  // 1.5-eye trail
-// Dart: a random eye or two fades up, holds and fades back down inside each
-// kAgitationDartStepMs hop, then a fresh group is picked.
-constexpr uint32_t kAgitationDartStepMs = 450;
-constexpr uint32_t kAgitationDartAttackMs = 150;
-constexpr uint32_t kAgitationDartHoldMs = 150;
-constexpr uint32_t kAgitationDartFadeMs = 150;
+// Dart: every eye runs its own on/off clock, so the lit set never steps in
+// lockstep. An eye fades up, holds at a flicker for a random
+// kAgitationDartOnMinMs..kAgitationDartOnMaxMs (brief flashes and long
+// lingering glows both happen), fades back out, then stays dark for a random
+// kAgitationDartOffMinMs..kAgitationDartOffMaxMs before it may fire again.
+constexpr uint32_t kAgitationDartOnMinMs = 100;
+constexpr uint32_t kAgitationDartOnMaxMs = 650;
+constexpr uint32_t kAgitationDartOffMinMs = 140;
+constexpr uint32_t kAgitationDartOffMaxMs = 820;
+// Pulse edges. Each ramp is clamped to a third of the pulse, so even the
+// briefest flash still eases in and out instead of snapping.
+constexpr uint32_t kAgitationDartAttackMs = 60;
+constexpr uint32_t kAgitationDartFadeMs = 120;
 // Ripple: exactly the mode 0 motion flash from before the sleep machine. Eye 0
 // snaps green within kGreenAttackMs, the rest follow kGreenSpreadMs apart, and
 // every eye then holds at full brightness with an ember flicker for as long as

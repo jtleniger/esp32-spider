@@ -18,7 +18,7 @@ enum SmolderState : uint8_t {
 enum AgitationKind : uint8_t {
   kAgitationRipple = 0,  // original motion flash: spread, hold, motion-stop fade
   kAgitationSweep = 1,   // bright green eye sweeping left<->right
-  kAgitationDart = 2,    // random single eyes snapping green
+  kAgitationDart = 2,    // independent eyes pulsing green on their own clocks
 };
 constexpr uint8_t kAgitationKindCount = 3;
 
@@ -88,6 +88,8 @@ class LedEngine {
   void agitationFrame(uint32_t nowMs, uint16_t *green);
   // Advances the sweep through its traverse/rest phases up to nowMs.
   void advanceSweep(uint32_t nowMs);
+  // Advances every eye's independent dart on/off clock up to nowMs.
+  void advanceDart(uint32_t nowMs);
   void enterAwake(uint32_t nowMs, bool fromAgitation);
   // Parks in the awake state with no hand-back animation, for a ripple that has
   // already faded its greens back into the embers.
@@ -146,6 +148,9 @@ class LedEngine {
   uint32_t sweepPhaseStartMs_;   // kModeSmolder agitated: current sweep phase origin
   uint32_t sweepPhaseEndMs_;     // kModeSmolder agitated: when the next phase starts
   uint32_t sweepSeq_;            // kModeSmolder: sweep phase counter (seeds lengths)
+  bool dartOn_[kEyeCount];            // kModeSmolder dart: eye is in its lit phase
+  uint32_t dartPhaseStartMs_[kEyeCount];  // dart: origin of the current phase
+  uint32_t dartPhaseEndMs_[kEyeCount];    // dart: when the phase flips
   uint32_t stalkerAlert_;       // kModeStalker: Q16 ramp toward the pop (0..1<<16)
   uint32_t stalkerLastTickMs_;  // kModeStalker: previous tick() timestamp
   uint32_t stalkerStartMs_;     // kModeStalker: scan phase reference

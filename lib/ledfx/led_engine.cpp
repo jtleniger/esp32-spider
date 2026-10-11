@@ -28,9 +28,12 @@ static_assert(kAgitationSweepMinMs < kAgitationSweepMaxMs &&
                   kAgitationFlickerPwm < kMaxPwm &&
                   kAgitationSweepTailPermille != 0 &&
                   kAgitationSweepTailPermille <= (kEyeCount - 1) * 1000 &&
-                  kAgitationDartAttackMs + kAgitationDartHoldMs +
-                          kAgitationDartFadeMs ==
-                      kAgitationDartStepMs &&
+                  kAgitationDartOnMinMs >= 3 &&
+                  kAgitationDartOnMinMs < kAgitationDartOnMaxMs &&
+                  kAgitationDartOffMinMs != 0 &&
+                  kAgitationDartOffMinMs < kAgitationDartOffMaxMs &&
+                  kAgitationDartAttackMs != 0 &&
+                  kAgitationDartFadeMs != 0 &&
                   kAgitationRippleExitMs != 0 && kAgitationExitMs != 0 &&
                   kAgitationKindCount == 3,
               "kModeSmolder agitation needs consistent tuning");
@@ -254,23 +257,24 @@ uint16_t wakePermille(uint32_t nowMs, uint32_t wakeStartMs, uint8_t eye) {
   return elapsed < kSleepGestureMs ? wakeGesturePermille(elapsed) : 1000;
 }
 
-// One darting eye's envelope inside its kAgitationDartStepMs hop, in permille:
-// fade up, hold, fade back down.
-uint16_t dartEnvelopePermille(uint32_t elapsedMs) {
-  if (elapsedMs < kAgitationDartAttackMs) {
+// One dart pulse's envelope in permille: fade up, hold, fade back down. Each
+// ramp is clamped to a third of the pulse so the briefest flash still eases
+// rather than snapping. Callers pass elapsedMs in [0, durMs).
+uint16_t dartPulsePermille(uint32_t elapsedMs, uint32_t durMs) {
+  const uint32_t ramp = durMs / 3;
+  const uint32_t attack = kAgitationDartAttackMs < ramp ? kAgitationDartAttackMs
+                                                        : ramp;
+  const uint32_t fade =
+      kAgitationDartFadeMs < ramp ? kAgitationDartFadeMs : ramp;
+  if (elapsedMs < attack) {
     return static_cast<uint16_t>(static_cast<uint64_t>(elapsedMs) * 1000 /
-                                 kAgitationDartAttackMs);
+                                 attack);
   }
-  const uint32_t holdEnd = kAgitationDartAttackMs + kAgitationDartHoldMs;
-  if (elapsedMs < holdEnd) {
-    return 1000;
+  if (elapsedMs + fade >= durMs) {
+    return static_cast<uint16_t>(static_cast<uint64_t>(durMs - elapsedMs) *
+                                 1000 / fade);
   }
-  if (elapsedMs < kAgitationDartStepMs) {
-    return static_cast<uint16_t>(
-        1000 - static_cast<uint64_t>(elapsedMs - holdEnd) * 1000 /
-                   kAgitationDartFadeMs);
-  }
-  return 0;
+  return 1000;
 }
 
 // Length of one sweep traverse / rest, hashed from its phase number.
@@ -345,6 +349,9 @@ LedEngine::LedEngine()
       sweepPhaseStartMs_(0),
       sweepPhaseEndMs_(0),
       sweepSeq_(0),
+      dartOn_{},
+      dartPhaseStartMs_{},
+      dartPhaseEndMs_{},
       stalkerAlert_(0),
       stalkerLastTickMs_(0),
       stalkerStartMs_(0),
@@ -396,6 +403,11 @@ bool LedEngine::setMode(uint16_t mode, uint16_t channel, uint32_t nowMs) {
   agitationKind_ = 0;
   agitationSeq_ = 0;
   sweepSeq_ = 0;
+  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+    dartOn_[eye] = false;
+    dartPhaseStartMs_[eye] = nowMs;
+    dartPhaseEndMs_[eye] = nowMs;
+  }
   agitationStartMs_ = nowMs;
   lastRadarHighMs_ = nowMs;
   stalkerAlert_ = 0;
@@ -607,6 +619,40 @@ void LedEngine::enterAgitated(uint32_t nowMs) {
   sweepPhaseStartMs_ = nowMs;
   sweepPhaseEndMs_ = nowMs + sweepTraverseMs(sweepSeq_);
   ++sweepSeq_;
+
+  // Seed each eye's independent dart clock, staggered so the eyes never step
+  // together: roughly half start already partway into a lit pulse, the rest
+  // start dark for a random gap.
+  bool anyOn = false;
+  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+    const uint32_t seed =
+        nowMs * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x1Fu;
+    if (hashRange(seed + 0x9Bu, 2) != 0) {
+      const uint32_t onMs =
+          kAgitationDartOnMinMs +
+          hashRange(seed, kAgitationDartOnMaxMs - kAgitationDartOnMinMs);
+      const uint32_t into = hashRange(seed + 0x33u, onMs);
+      dartOn_[eye] = true;
+      dartPhaseStartMs_[eye] = nowMs - into;
+      dartPhaseEndMs_[eye] = dartPhaseStartMs_[eye] + onMs;
+      anyOn = true;
+    } else {
+      dartOn_[eye] = false;
+      dartPhaseStartMs_[eye] = nowMs;
+      dartPhaseEndMs_[eye] =
+          nowMs + kAgitationDartOffMinMs +
+          hashRange(seed + 0x57u,
+                    kAgitationDartOffMaxMs - kAgitationDartOffMinMs);
+    }
+  }
+  if (!anyOn) {
+    // A darting face must never open all-dark: put one eye mid-pulse.
+    const uint8_t eye = static_cast<uint8_t>(
+        hashRange(nowMs * 2654435761u + 0x2Fu, kEyeCount));
+    dartOn_[eye] = true;
+    dartPhaseStartMs_[eye] = nowMs - kAgitationDartOnMaxMs / 2;
+    dartPhaseEndMs_[eye] = dartPhaseStartMs_[eye] + kAgitationDartOnMaxMs;
+  }
 }
 
 void LedEngine::emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange,
@@ -823,19 +869,16 @@ void LedEngine::agitationFrame(uint32_t nowMs, uint16_t *green) {
   }
 
   if (agitationKind_ == kAgitationDart) {
-    // A random eye or two fades up, holds and fades back down per hop.
-    const uint32_t hop = nowMs - agitationStartMs_;
-    const uint32_t step = hop / kAgitationDartStepMs;
-    const uint32_t seed = agitationStartMs_ * 2654435761u + step * 40503u + 0x1Du;
-    uint8_t mask = static_cast<uint8_t>(1u << hashRange(seed, kEyeCount));
-    if (hashRange(seed + 0x2Bu, 2) != 0) {
-      mask |= static_cast<uint8_t>(1u << hashRange(seed + 0x5Du, kEyeCount));
-    }
-    const uint16_t envelope = dartEnvelopePermille(hop % kAgitationDartStepMs);
+    // Every eye runs its own on/off clock, so the lit set turns over
+    // independently instead of stepping together.
+    advanceDart(nowMs);
     for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
-      if (((mask >> eye) & 1u) == 0) {
+      if (!dartOn_[eye]) {
         continue;
       }
+      const uint32_t elapsed = nowMs - dartPhaseStartMs_[eye];
+      const uint32_t dur = dartPhaseEndMs_[eye] - dartPhaseStartMs_[eye];
+      const uint16_t envelope = dartPulsePermille(elapsed, dur);
       const uint8_t channel = kEyes[eye].green;
       green[eye] = saturatePwm(withFlicker(scalePermille(kMaxPwm, envelope),
                                            channel, flickerStep,
@@ -857,6 +900,33 @@ void LedEngine::advanceSweep(uint32_t nowMs) {
       sweepTraversing_ = true;
       sweepForward_ = !sweepForward_;
       sweepPhaseEndMs_ = sweepPhaseStartMs_ + sweepTraverseMs(seq);
+    }
+  }
+}
+
+// Advances every eye's dart clock to nowMs, flipping eyes between their lit and
+// dark phases. Each phase length is hashed from the phase's own start time, so
+// an eye's pulses are indefinite, unpredictable and independent of its
+// neighbours'. Phase lengths are at least kAgitationDartOnMinMs /
+// kAgitationDartOffMinMs, so the catch-up loop is bounded.
+void LedEngine::advanceDart(uint32_t nowMs) {
+  for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
+    while (nowMs >= dartPhaseEndMs_[eye]) {
+      const uint32_t start = dartPhaseEndMs_[eye];
+      const uint32_t seed =
+          start * 2654435761u + static_cast<uint32_t>(eye) * 40503u + 0x7Au;
+      dartPhaseStartMs_[eye] = start;
+      if (dartOn_[eye]) {
+        dartOn_[eye] = false;
+        dartPhaseEndMs_[eye] =
+            start + kAgitationDartOffMinMs +
+            hashRange(seed, kAgitationDartOffMaxMs - kAgitationDartOffMinMs);
+      } else {
+        dartOn_[eye] = true;
+        dartPhaseEndMs_[eye] =
+            start + kAgitationDartOnMinMs +
+            hashRange(seed, kAgitationDartOnMaxMs - kAgitationDartOnMinMs);
+      }
     }
   }
 }

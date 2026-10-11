@@ -89,17 +89,6 @@ uint8_t countWarmEyes(const ledfx::LedEngine &e) {
   return count;
 }
 
-// Bit per eye whose green LED is above zero.
-uint8_t greenMask(const ledfx::LedEngine &e) {
-  uint8_t mask = 0;
-  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
-    if (greenLevel(e, eye) > 0) {
-      mask |= static_cast<uint8_t>(1u << eye);
-    }
-  }
-  return mask;
-}
-
 // Brightest green level anywhere on the rig.
 uint16_t maxGreenLevel(const ledfx::LedEngine &e) {
   uint16_t best = 0;
@@ -904,37 +893,48 @@ static void testSmolderSweepCrossesAndRests() {
   TEST_ASSERT_TRUE(brightest - dimmest >= 400);
 }
 
-// Dart fades each eye up and down inside a long hop instead of snapping.
-static void testSmolderDartFadesAndHopsSlowly() {
+// Dart gives each eye its own clock: pulse lengths vary widely (some eyes
+// linger, some only flash) and the eyes switch on and off independently, so the
+// face never steps through the same pattern in lockstep.
+static void testSmolderDartEyesPulseIndependently() {
   ledfx::LedEngine e;
   TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
   uint32_t t = 100000;
   const uint32_t entry = enterAgitationKind(e, ledfx::kAgitationDart, t);
   TEST_ASSERT_TRUE(entry != 0);
 
-  uint8_t mask = 0;
-  uint32_t run = 0;
+  uint32_t run[ledfx::kEyeCount] = {};
+  uint32_t transitions = 0;
   uint32_t longestRun = 0;
+  uint32_t shortestRun = 0xFFFFFFFFu;
   uint16_t dimmest = ledfx::kMaxPwm;
   uint16_t previousFull = 0;
   bool haveFull = false;
   bool sawFlicker = false;
-  for (uint32_t u = entry; u <= entry + 4000; u += 25) {
+  bool sawOn = false;
+  bool sawOff = false;
+  bool previousOn[ledfx::kEyeCount] = {};
+  for (uint32_t u = entry; u <= entry + 4000; u += 20) {
     e.tick(u, true);
     TEST_ASSERT_FALSE(anyWarmLit(e));
-    const uint8_t now = greenMask(e);
-    if (now == mask) {
-      run += 25;
-    } else {
-      if (run > longestRun) longestRun = run;
-      run = 25;
-      mask = now;
-    }
-    if (mask == 0) {
-      continue;
+    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+      const bool on = greenLevel(e, eye) > 0;
+      if (on != previousOn[eye]) {
+        ++transitions;
+        previousOn[eye] = on;
+      }
+      if (on) {
+        run[eye] += 20;
+        sawOn = true;
+      } else if (run[eye] != 0) {
+        if (run[eye] > longestRun) longestRun = run[eye];
+        if (run[eye] < shortestRun) shortestRun = run[eye];
+        run[eye] = 0;
+        sawOff = true;
+      }
     }
     const uint16_t level = maxGreenLevel(e);
-    if (level < dimmest) dimmest = level;
+    if (level > 0 && level < dimmest) dimmest = level;
     if (level >= ledfx::kMaxPwm - 200) {
       // Without flicker every full-brightness sample would be exactly kMaxPwm.
       if (haveFull && level != previousFull) {
@@ -946,10 +946,14 @@ static void testSmolderDartFadesAndHopsSlowly() {
       haveFull = false;
     }
   }
-  if (run > longestRun) longestRun = run;
-  // A hop lasts kAgitationDartStepMs, so the lit set changes only a handful of
-  // times in 4 s (it changed every 90 ms before).
-  TEST_ASSERT_TRUE(longestRun >= 300);
+  TEST_ASSERT_TRUE(sawOn);
+  TEST_ASSERT_TRUE(sawOff);
+  // Independent clocks flip the eyes far more often than one shared 450 ms step.
+  TEST_ASSERT_TRUE(transitions >= 20);
+  // Some pulses linger while others are only brief flashes.
+  TEST_ASSERT_TRUE(longestRun >= 400);
+  TEST_ASSERT_TRUE(shortestRun <= 250);
+  TEST_ASSERT_TRUE(longestRun >= shortestRun + 100);
   // Eyes fade up and down rather than snapping on and off.
   TEST_ASSERT_TRUE(dimmest < ledfx::kMaxPwm / 2);
   // A lit eye still flickers while it sits at full brightness.
@@ -1380,7 +1384,7 @@ int main(void) {
   RUN_TEST(testSmolderAgitationCrossfadesBackToEmbers);
   RUN_TEST(testSmolderRippleSpreadsHoldsAndFadesOut);
   RUN_TEST(testSmolderSweepCrossesAndRests);
-  RUN_TEST(testSmolderDartFadesAndHopsSlowly);
+  RUN_TEST(testSmolderDartEyesPulseIndependently);
   RUN_TEST(testSmolderAgitationKindsVary);
   RUN_TEST(testStalkerScansDimThenPopsRed);
   RUN_TEST(testStalkerReleaseReturnsToScan);
