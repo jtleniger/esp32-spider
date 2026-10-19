@@ -127,6 +127,17 @@ constexpr uint32_t kSleepWakeSpreadMs = 120;
 constexpr uint32_t kSmolderWakeMs =
     (kEyeCount - 1) * kSleepWakeSpreadMs + kSleepGestureMs;
 
+// --- kModeSmolder (mode 0) awake blinks ---
+// While the embers are lit, one randomly chosen eye now and then shuts like an
+// eyelid: both of its ember channels fade to off, hold dark briefly, then fade
+// back to whatever the crossfade is doing. Gaps are measured after the open, so
+// events cannot overlap; the sleep machine's half-opens are separate.
+constexpr uint32_t kSmolderBlinkMinGapMs = 4000;
+constexpr uint32_t kSmolderBlinkMaxGapMs = 12000;
+constexpr uint32_t kSmolderBlinkCloseMs = 120;
+constexpr uint32_t kSmolderBlinkHoldMs = 60;
+constexpr uint32_t kSmolderBlinkOpenMs = 180;
+
 // --- kModeSmolder agitation (green) ---
 // On motion the rig runs one of kAgitationKindCount green animations chosen at
 // random per episode. The sweep runs until the radar has been quiet for

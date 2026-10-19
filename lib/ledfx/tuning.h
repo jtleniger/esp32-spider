@@ -48,6 +48,13 @@ struct Tuning {
   uint16_t sleepFlarePermille = kSleepFlarePermille;
   uint32_t sleepWakeSpreadMs = kSleepWakeSpreadMs;
 
+  // --- kModeSmolder awake blinks ---
+  uint32_t smolderBlinkMinGapMs = kSmolderBlinkMinGapMs;
+  uint32_t smolderBlinkMaxGapMs = kSmolderBlinkMaxGapMs;
+  uint32_t smolderBlinkCloseMs = kSmolderBlinkCloseMs;
+  uint32_t smolderBlinkHoldMs = kSmolderBlinkHoldMs;
+  uint32_t smolderBlinkOpenMs = kSmolderBlinkOpenMs;
+
   // --- kModeSmolder agitation (green) ---
   uint32_t agitationHoldMs = kAgitationHoldMs;
   uint32_t agitationExitMs = kAgitationExitMs;
@@ -97,6 +104,9 @@ struct Tuning {
   }
   constexpr uint32_t smolderWakeMs() const {
     return (kEyeCount - 1) * sleepWakeSpreadMs + sleepGestureMs;
+  }
+  constexpr uint32_t smolderBlinkSpanMs() const {
+    return smolderBlinkCloseMs + smolderBlinkHoldMs + smolderBlinkOpenMs;
   }
   constexpr uint32_t agitationRippleExitMs() const {
     return (kEyeCount - 1) * greenSpreadMs + greenFadeMs;
@@ -166,6 +176,17 @@ constexpr TuningField kTuningFields[] = {
     {"sleep_flare_permille", &Tuning::sleepFlarePermille, nullptr, 0,
      kTuningMaxPermille - 1},
     {"sleep_wake_spread_ms", nullptr, &Tuning::sleepWakeSpreadMs, 1,
+     kTuningMaxMs},
+    // --- kModeSmolder awake blinks ---
+    {"smolder_blink_min_gap_ms", nullptr, &Tuning::smolderBlinkMinGapMs, 1,
+     kTuningMaxMs},
+    {"smolder_blink_max_gap_ms", nullptr, &Tuning::smolderBlinkMaxGapMs, 1,
+     kTuningMaxMs},
+    {"smolder_blink_close_ms", nullptr, &Tuning::smolderBlinkCloseMs, 1,
+     kTuningMaxMs},
+    {"smolder_blink_hold_ms", nullptr, &Tuning::smolderBlinkHoldMs, 0,
+     kTuningMaxMs},
+    {"smolder_blink_open_ms", nullptr, &Tuning::smolderBlinkOpenMs, 1,
      kTuningMaxMs},
     // --- kModeSmolder agitation (green) ---
     {"agitation_hold_ms", nullptr, &Tuning::agitationHoldMs, 1, kTuningMaxMs},
@@ -306,6 +327,9 @@ inline bool validateTuning(const Tuning &tuning, const char **offender) {
   }
   if (tuning.sleepOpenMinGapMs >= tuning.sleepOpenMaxGapMs) {
     return fail("sleep_open_min_gap_ms");
+  }
+  if (tuning.smolderBlinkMinGapMs >= tuning.smolderBlinkMaxGapMs) {
+    return fail("smolder_blink_min_gap_ms");
   }
   if (tuning.sleepDipEndMs >= tuning.sleepFlareEndMs) {
     return fail("sleep_dip_end_ms");

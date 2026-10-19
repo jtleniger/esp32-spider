@@ -21,6 +21,9 @@ static_assert(kSmolderSleepAfterMs < kSmolderSleepDeadlineMs &&
                   kSleepFlarePermille < 1000 && kSleepWakeSpreadMs != 0 &&
                   kSmolderWakeMs != 0,
               "kModeSmolder sleep machine needs consistent tuning");
+static_assert(kSmolderBlinkMinGapMs < kSmolderBlinkMaxGapMs &&
+                  kSmolderBlinkCloseMs != 0 && kSmolderBlinkOpenMs != 0,
+              "kModeSmolder blink needs consistent tuning");
 static_assert(kAgitationSweepMinMs < kAgitationSweepMaxMs &&
                   kAgitationSweepPauseMinMs < kAgitationSweepPauseMaxMs &&
                   kAgitationSweepMinMs != 0 &&
@@ -231,6 +234,28 @@ uint16_t wakePermille(const Tuning &tuning, uint32_t nowMs, uint32_t wakeStartMs
                                          : 1000;
 }
 
+// Awake-blink eyelid envelope in permille: fully open at 1000, fade to off,
+// hold dark, then fade back to the eye's live ember level.
+uint16_t blinkPermille(const Tuning &tuning, uint32_t elapsedMs) {
+  const uint32_t closeMs = tuning.smolderBlinkCloseMs;
+  const uint32_t holdMs = tuning.smolderBlinkHoldMs;
+  const uint32_t openMs = tuning.smolderBlinkOpenMs;
+  if (elapsedMs < closeMs) {
+    return static_cast<uint16_t>(
+        1000 - static_cast<uint64_t>(elapsedMs) * 1000 / closeMs);
+  }
+  const uint32_t shutMs = closeMs + holdMs;
+  if (elapsedMs < shutMs) {
+    return 0;
+  }
+  const uint32_t openElapsed = elapsedMs - shutMs;
+  if (openElapsed < openMs) {
+    return static_cast<uint16_t>(static_cast<uint64_t>(openElapsed) * 1000 /
+                                 openMs);
+  }
+  return 1000;
+}
+
 // Length of one sweep traverse / rest, hashed from its phase number.
 uint32_t sweepTraverseMs(const Tuning &tuning, uint32_t seq) {
   return tuning.agitationSweepMinMs +
@@ -268,6 +293,11 @@ LedEngine::LedEngine()
       sleepNextOpenMs_(0),
       sleepOpenMask_(0),
       sleepOpenSeq_(0),
+      blinkNextMs_(0),
+      blinkStartMs_(0),
+      blinkEye_(0),
+      blinkActive_(false),
+      blinkSeq_(0),
       agitationKind_(0),
       agitationSeq_(0),
       agitationStartMs_(0),
@@ -312,6 +342,12 @@ bool LedEngine::setMode(uint16_t mode, uint16_t channel, uint32_t nowMs) {
   sleepNextOpenMs_ = 0;
   sleepOpenMask_ = 0;
   sleepOpenSeq_ = 0;
+  blinkNextMs_ = nowMs;
+  blinkStartMs_ = nowMs;
+  blinkEye_ = 0;
+  blinkActive_ = false;
+  blinkSeq_ = 0;
+  scheduleNextBlink(nowMs);
   agitationKind_ = 0;
   agitationSeq_ = 0;
   sweepSeq_ = 0;
@@ -474,12 +510,15 @@ void LedEngine::enterAwakeQuiet(uint32_t nowMs) {
   wakeFromAgitation_ = false;
   sleepHazardStartMs_ = nowMs;
   sleepCheckMs_ = nowMs + tuning_.smolderSleepAfterMs;
+  blinkActive_ = false;
+  scheduleNextBlink(nowMs);
 }
 
 void LedEngine::enterAsleep(uint32_t nowMs) {
   smolderState_ = kSmolderAsleep;
   smolderStateStartMs_ = nowMs;
   waking_ = false;
+  blinkActive_ = false;
   ++smolderSleepSeq_;
   const uint32_t seed = smolderSleepSeq_ * 2654435761u + 0x9Eu;
   const uint32_t sleepMinMs = tuning_.smolderSleepMinMs;
@@ -497,6 +536,7 @@ void LedEngine::enterAgitated(uint32_t nowMs) {
   smolderState_ = kSmolderAgitated;
   smolderStateStartMs_ = nowMs;
   waking_ = false;
+  blinkActive_ = false;
   agitationKind_ = static_cast<uint8_t>(
       hashRange(agitationSeq_ * 2654435761u + 0x6Bu, kAgitationKindCount));
   ++agitationSeq_;
@@ -525,11 +565,43 @@ void LedEngine::emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange,
                                 wiring.red, flickerStep, flickerPwm));
 }
 
+void LedEngine::scheduleNextBlink(uint32_t nowMs) {
+  const uint32_t gapMinMs = tuning_.smolderBlinkMinGapMs;
+  blinkNextMs_ =
+      nowMs + gapMinMs +
+      hashRange(blinkSeq_ * 2654435761u + 0x5Du,
+                tuning_.smolderBlinkMaxGapMs - gapMinMs);
+}
+
+void LedEngine::advanceBlink(uint32_t nowMs) {
+  const uint32_t spanMs = tuning_.smolderBlinkSpanMs();
+  if (blinkActive_ && nowMs - blinkStartMs_ >= spanMs) {  // wrap intentional
+    blinkActive_ = false;
+    scheduleNextBlink(nowMs);
+  }
+  if (!blinkActive_ && nowMs >= blinkNextMs_) {
+    blinkEye_ = static_cast<uint8_t>(
+        hashRange(blinkSeq_ * 2654435761u + 0x6Du, kEyeCount));
+    blinkStartMs_ = nowMs;
+    blinkActive_ = true;
+    ++blinkSeq_;
+  }
+}
+
 void LedEngine::renderSmolderEmbers(uint32_t nowMs, uint16_t *out) {
+  advanceBlink(nowMs);
+  const uint32_t blinkElapsed = nowMs - blinkStartMs_;  // wrap intentional
   for (uint8_t eye = 0; eye < kEyeCount; ++eye) {
     uint16_t orange = 0;
     uint16_t red = 0;
     emberLevels(eye, nowMs, orange, red);
+    if (blinkActive_ && eye == blinkEye_) {
+      // An eyelid closes over the live embers: scale both channels, so the eye
+      // returns to whatever the crossfade is doing when it opens.
+      const uint16_t env = blinkPermille(tuning_, blinkElapsed);
+      orange = saturatePwm(scalePermille(orange, env));
+      red = saturatePwm(scalePermille(red, env));
+    }
     out[kEyes[eye].orange] = orange;
     out[kEyes[eye].red] = red;
   }

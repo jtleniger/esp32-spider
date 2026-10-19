@@ -85,6 +85,11 @@ class LedEngine {
   void emberLevels(uint8_t eye, uint32_t nowMs, uint16_t &orange, uint16_t &red);
   // Renders the asleep state: progressive eyelid closures plus half-open events.
   void renderSmolderAsleep(uint32_t nowMs, uint16_t *out);
+  // Schedules the next awake blink `nowMs` plus a random quiet gap from now.
+  void scheduleNextBlink(uint32_t nowMs);
+  // Advances the awake blink: ends a finished one, starts a due one on a
+  // randomly chosen eye and schedules the next gap after the open.
+  void advanceBlink(uint32_t nowMs);
   // Renders the agitation animation agitationKind_. Ripple writes the embers
   // too (they rise as its greens fade); sweep is green only.
   void renderSmolderAgitated(uint32_t nowMs, bool radarHigh, uint16_t *out);
@@ -136,6 +141,11 @@ class LedEngine {
   uint32_t sleepNextOpenMs_;     // kModeSmolder asleep: next half-open event time
   uint8_t sleepOpenMask_;        // kModeSmolder asleep: eyes in the current event
   uint32_t sleepOpenSeq_;        // kModeSmolder asleep: half-open event counter
+  uint32_t blinkNextMs_;         // kModeSmolder awake: next blink start
+  uint32_t blinkStartMs_;        // kModeSmolder awake: current blink start
+  uint8_t blinkEye_;             // kModeSmolder awake: eye currently blinking
+  bool blinkActive_;             // kModeSmolder awake: a blink is running
+  uint32_t blinkSeq_;            // kModeSmolder awake: blink counter (seeds maths)
   uint8_t agitationKind_;        // kModeSmolder agitated: current animation
   uint32_t agitationSeq_;        // kModeSmolder: agitation counter (picks the kind)
   uint32_t agitationStartMs_;    // kModeSmolder agitated: animation phase origin

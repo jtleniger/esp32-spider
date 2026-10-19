@@ -59,6 +59,10 @@ void testTuningDefaultsAreValid() {
 
   TEST_ASSERT_EQUAL_UINT32(ledfx::kSmolderPeriodMs, defaults.smolderPeriodMs());
   TEST_ASSERT_EQUAL_UINT32(ledfx::kSmolderWakeMs, defaults.smolderWakeMs());
+  TEST_ASSERT_EQUAL_UINT32(
+      ledfx::kSmolderBlinkCloseMs + ledfx::kSmolderBlinkHoldMs +
+          ledfx::kSmolderBlinkOpenMs,
+      defaults.smolderBlinkSpanMs());
   TEST_ASSERT_EQUAL_UINT32(ledfx::kAgitationRippleExitMs,
                            defaults.agitationRippleExitMs());
 }
@@ -156,6 +160,12 @@ void testTuningRejectsInconsistent() {
       applyOne(tuning, "smolder_sleep_min_ms", "999999", &offender);
   TEST_ASSERT_EQUAL_STRING("kInconsistent", resultName(result));
   TEST_ASSERT_EQUAL_STRING("smolder_sleep_min_ms", offender);
+  TEST_ASSERT_TRUE(sameTuning(ledfx::Tuning{}, tuning));
+
+  const ledfx::TuningResult blink =
+      applyOne(tuning, "smolder_blink_min_gap_ms", "12000", &offender);
+  TEST_ASSERT_EQUAL_STRING("kInconsistent", resultName(blink));
+  TEST_ASSERT_EQUAL_STRING("smolder_blink_min_gap_ms", offender);
   TEST_ASSERT_TRUE(sameTuning(ledfx::Tuning{}, tuning));
 }
 
