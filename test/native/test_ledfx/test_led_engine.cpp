@@ -157,6 +157,31 @@ bool sparkHeadIsRed(const ledfx::LedEngine &e) {
   return e.frame()[w.red] > e.frame()[w.orange];
 }
 
+// Push the next awake blink far outside any test window. The ember rendering
+// is unaffected, so tests that pin exact ember levels stay deterministic.
+void disableBlink(ledfx::LedEngine &e) {
+  e.tuning().smolderBlinkMinGapMs = ledfx::kTuningMaxMs - 1;
+  e.tuning().smolderBlinkMaxGapMs = ledfx::kTuningMaxMs;
+}
+
+// A blink every ~1 s, short enough to observe several in a test.
+void useFastBlink(ledfx::LedEngine &e) {
+  e.tuning().smolderBlinkMinGapMs = 1000;
+  e.tuning().smolderBlinkMaxGapMs = 1001;
+  e.tuning().smolderBlinkCloseMs = 200;
+  e.tuning().smolderBlinkHoldMs = 100;
+  e.tuning().smolderBlinkOpenMs = 200;
+}
+
+bool sameFrame(const ledfx::LedEngine &a, const ledfx::LedEngine &b) {
+  for (uint16_t channel = 0; channel < ledfx::kChannelCount; ++channel) {
+    if (a.frame()[channel] != b.frame()[channel]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 extern "C" void setUp(void) {}
@@ -509,7 +534,9 @@ static void testSmolderIdleLeavesGreenOff() {
 // dark colour shows no flicker at all and the lit one swings by a large, visible
 // fraction of the flicker amplitude.
 static void testSmolderHoldsAreSingleColourAndFlicker() {
-  TEST_ASSERT_TRUE(engine.setMode(ledfx::kModeSmolder, 0, 0));
+  ledfx::LedEngine e;
+  disableBlink(e);
+  TEST_ASSERT_TRUE(e.setMode(ledfx::kModeSmolder, 0, 0));
   const uint8_t orange = ledfx::kEyes[0].orange;
   const uint8_t red = ledfx::kEyes[0].red;
 
@@ -519,9 +546,9 @@ static void testSmolderHoldsAreSingleColourAndFlicker() {
   uint16_t redMax = 0;
   for (uint32_t t = 0; t < ledfx::kSmolderDwellMs;
        t += ledfx::kSmolderFlickerStepMs) {
-    engine.tick(t, false);
-    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, orange));
-    const uint16_t r = channelLevel(engine, red);
+    e.tick(t, false);
+    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(e, orange));
+    const uint16_t r = channelLevel(e, red);
     if (r < redMin) redMin = r;
     if (r > redMax) redMax = r;
   }
@@ -535,9 +562,9 @@ static void testSmolderHoldsAreSingleColourAndFlicker() {
   uint16_t orangeMax = 0;
   for (uint32_t t = orangeHold; t < orangeHold + ledfx::kSmolderDwellMs;
        t += ledfx::kSmolderFlickerStepMs) {
-    engine.tick(t, false);
-    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(engine, red));
-    const uint16_t o = channelLevel(engine, orange);
+    e.tick(t, false);
+    TEST_ASSERT_EQUAL_UINT16(0, channelLevel(e, red));
+    const uint16_t o = channelLevel(e, orange);
     if (o < orangeMin) orangeMin = o;
     if (o > orangeMax) orangeMax = o;
   }
@@ -559,6 +586,157 @@ static void testSmolderEyesAreNotInLockstep() {
     }
   }
   TEST_ASSERT_TRUE(sawDifferent);
+}
+
+// One eye at a time fades to fully off and back to its live ember level. A
+// control engine with blinking pushed out of the window supplies the unblinked
+// ember frame to compare against.
+static void testSmolderBlinkClosesAndOpensOneEye() {
+  ledfx::LedEngine blink;
+  useFastBlink(blink);
+  ledfx::LedEngine control;
+  disableBlink(control);
+  TEST_ASSERT_TRUE(blink.setMode(ledfx::kModeSmolder, 0, 0));
+  TEST_ASSERT_TRUE(control.setMode(ledfx::kModeSmolder, 0, 0));
+
+  uint8_t blinkEye = 0xFF;
+  bool sawBlink = false;
+  bool sawClosed = false;
+  for (uint32_t t = 0; t <= 2400; t += 10) {
+    blink.tick(t, false);
+    control.tick(t, false);
+    uint8_t differing = 0xFF;
+    uint8_t diffCount = 0;
+    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+      const ledfx::EyeWiring &w = ledfx::kEyes[eye];
+      if (blink.frame()[w.orange] != control.frame()[w.orange] ||
+          blink.frame()[w.red] != control.frame()[w.red]) {
+        ++diffCount;
+        differing = eye;
+      }
+    }
+    if (diffCount == 0) {
+      continue;
+    }
+    TEST_ASSERT_EQUAL_UINT8(1, diffCount);
+    TEST_ASSERT_FALSE(anyGreenLit(blink));
+    if (blinkEye == 0xFF) {
+      blinkEye = differing;
+    }
+    TEST_ASSERT_EQUAL_UINT8(blinkEye, differing);
+    sawBlink = true;
+    const ledfx::EyeWiring &w = ledfx::kEyes[blinkEye];
+    if (blink.frame()[w.orange] == 0 && blink.frame()[w.red] == 0) {
+      sawClosed = true;
+    }
+  }
+  TEST_ASSERT_TRUE(sawBlink);
+  TEST_ASSERT_TRUE(sawClosed);
+  TEST_ASSERT_TRUE(blinkEye < ledfx::kEyeCount);
+
+  // The first blink is over by now, so the eye has reopened onto the same
+  // crossfade the control is running.
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    const ledfx::EyeWiring &w = ledfx::kEyes[eye];
+    TEST_ASSERT_EQUAL_UINT16(control.frame()[w.orange],
+                             blink.frame()[w.orange]);
+    TEST_ASSERT_EQUAL_UINT16(control.frame()[w.red], blink.frame()[w.red]);
+  }
+}
+
+// The blink counter must keep choosing different eyes, not hammer one.
+static void testSmolderBlinkPicksDifferentEyes() {
+  ledfx::LedEngine blink;
+  useFastBlink(blink);
+  ledfx::LedEngine control;
+  disableBlink(control);
+  TEST_ASSERT_TRUE(blink.setMode(ledfx::kModeSmolder, 0, 0));
+  TEST_ASSERT_TRUE(control.setMode(ledfx::kModeSmolder, 0, 0));
+
+  bool seen[ledfx::kEyeCount] = {};
+  bool inEvent = false;
+  unsigned events = 0;
+  for (uint32_t t = 0; t <= 29000; t += 10) {
+    blink.tick(t, false);
+    control.tick(t, false);
+    uint8_t differing = 0xFF;
+    uint8_t diffCount = 0;
+    for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+      const ledfx::EyeWiring &w = ledfx::kEyes[eye];
+      if (blink.frame()[w.orange] != control.frame()[w.orange] ||
+          blink.frame()[w.red] != control.frame()[w.red]) {
+        ++diffCount;
+        differing = eye;
+      }
+    }
+    TEST_ASSERT_TRUE(diffCount <= 1);
+    if (diffCount == 1 && !inEvent) {
+      seen[differing] = true;
+      ++events;
+      inEvent = true;
+    } else if (diffCount == 0) {
+      inEvent = false;
+    }
+  }
+  TEST_ASSERT_TRUE(events >= 4);
+  unsigned distinct = 0;
+  for (uint8_t eye = 0; eye < ledfx::kEyeCount; ++eye) {
+    if (seen[eye]) {
+      ++distinct;
+    }
+  }
+  TEST_ASSERT_TRUE(distinct >= 2);
+}
+
+// Blinks belong to the awake embers only: the asleep and agitated frames match
+// a control that cannot blink, and blinking resumes after the hand-back.
+static void testSmolderBlinkStaysOutOfAsleepAndAgitation() {
+  ledfx::LedEngine blink;
+  useFastBlink(blink);
+  ledfx::LedEngine control;
+  disableBlink(control);
+  TEST_ASSERT_TRUE(blink.setMode(ledfx::kModeSmolder, 0, 0));
+  TEST_ASSERT_TRUE(control.setMode(ledfx::kModeSmolder, 0, 0));
+
+  bool sawAwakeBlink = false;
+  for (uint32_t t = 0; t <= ledfx::kSmolderSleepDeadlineMs; t += 250) {
+    blink.tick(t, false);
+    control.tick(t, false);
+    if (!sameFrame(blink, control)) {
+      sawAwakeBlink = true;
+    }
+  }
+  TEST_ASSERT_TRUE(sawAwakeBlink);
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, blink.smolderState());
+  TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, control.smolderState());
+
+  uint32_t t = ledfx::kSmolderSleepDeadlineMs;
+  const uint32_t darkEnd =
+      t + ledfx::kSleepFallMaxMs + ledfx::kSleepGestureMs + 1000;
+  for (t += 250; t <= darkEnd; t += 250) {
+    blink.tick(t, false);
+    control.tick(t, false);
+    TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAsleep, blink.smolderState());
+    TEST_ASSERT_TRUE(sameFrame(blink, control));
+  }
+
+  for (uint32_t u = t; u <= t + 2000; u += 100) {
+    blink.tick(u, true);
+    control.tick(u, true);
+    TEST_ASSERT_EQUAL_UINT8(ledfx::kSmolderAgitated, blink.smolderState());
+    TEST_ASSERT_TRUE(sameFrame(blink, control));
+  }
+
+  bool resumed = false;
+  for (uint32_t u = t + 2000; u <= t + 8000; u += 50) {
+    blink.tick(u, false);
+    control.tick(u, false);
+    if (!sameFrame(blink, control)) {
+      resumed = true;
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE(resumed);
 }
 
 // Nothing nods off inside the first kSmolderSleepAfterMs: the engine stays awake
@@ -1108,6 +1286,9 @@ int main(void) {
   RUN_TEST(testSmolderIdleLeavesGreenOff);
   RUN_TEST(testSmolderHoldsAreSingleColourAndFlicker);
   RUN_TEST(testSmolderEyesAreNotInLockstep);
+  RUN_TEST(testSmolderBlinkClosesAndOpensOneEye);
+  RUN_TEST(testSmolderBlinkPicksDifferentEyes);
+  RUN_TEST(testSmolderBlinkStaysOutOfAsleepAndAgitation);
   RUN_TEST(testSmolderStaysAwakeBeforeSleepWindow);
   RUN_TEST(testSmolderFallsAsleepWhenUndisturbed);
   RUN_TEST(testSmolderNapsWithinBoundsThenWakes);

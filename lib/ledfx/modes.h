@@ -9,9 +9,10 @@ namespace ledfx {
 // Integer enumeration accepted by POST /mode?m=<value>.
 enum Mode : uint16_t {
   // Smolder: a sleep/wake machine. Awake runs a slow orange/red ember crossfade
-  // with a flicker and a per-eye phase offset; left undisturbed it grows
-  // drowsy, then each eye's ember sinks and goes out (and occasionally
-  // half-opens again) until the nap ends and the eyes open one at a time.
+  // with a flicker, a per-eye phase offset and occasional one-eye blinks; left
+  // undisturbed it grows drowsy, then each eye's ember sinks and goes out (and
+  // occasionally half-opens again) until the nap ends and the eyes open one at
+  // a time.
   // Motion pulls the rig into an agitation picked at random: the original
   // eye-by-eye green spread (which holds while motion lasts and fades back into
   // the embers the moment it stops), or a sweeping beam. The sweep crossfades

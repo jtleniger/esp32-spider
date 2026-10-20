@@ -55,7 +55,7 @@ constexpr size_t kMaxPendingEvents = 32;
 constexpr const char *kNvsNamespace = "ledfx";
 constexpr const char *kNvsTuningKey = "tuning";
 constexpr const char *kNvsVersionKey = "version";
-constexpr uint32_t kTuningVersion = 1;
+constexpr uint32_t kTuningVersion = 2;
 
 Adafruit_TLC5947 tlc(ledfx::kTlcDriverCount, ledfx::kTlcClockPin, ledfx::kTlcDataPin,
                      ledfx::kTlcLatchPin);
